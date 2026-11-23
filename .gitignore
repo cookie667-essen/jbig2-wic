@@ -1,7 +1,7 @@
 # Build- & MSVC-Artefakte
-build/
-out/
-dist/
+/build/
+/out/
+/dist/
 .vs/
 *.exe
 *.dll
