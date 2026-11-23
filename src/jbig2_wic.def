@@ -1,0 +1,9 @@
+LIBRARY jbig2_wic
+EXPORTS
+    DllGetClassObject   PRIVATE
+    DllCanUnloadNow     PRIVATE
+    DllRegisterServer   PRIVATE
+    DllUnregisterServer PRIVATE
+    jbig2_encode_1bpp
+    jbig2_free_buffer
+    jbig2_encode_multipage_1bpp

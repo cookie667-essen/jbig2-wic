@@ -1,0 +1,23 @@
+# Build- & MSVC-Artefakte
+build/
+out/
+dist/
+.vs/
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.obj
+*.ilk
+*.zip
+
+# Temporäre Test- & Hilfsdateien
+*.pbm
+reencoded_*.jb2
+multipage_*.jb2
+check_*.png
+upgrade_*.ps1
+optimize_*.ps1
+setup_*.ps1
+prepare_github.py
