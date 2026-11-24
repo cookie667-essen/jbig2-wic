@@ -5,6 +5,9 @@
 #include <cstdint>
 #include <cstring>
 #include <vector>
+#include <atomic>
+#include <thread>
+
 
 namespace jbig2 {
 namespace {
@@ -157,6 +160,35 @@ std::vector<uint8_t> EncodeGenericRegionPayload(const Bitmap1bppView& bmp, bool 
     return payload;
 }
 
+template <typename Fn>
+void RunParallelWithCtx(size_t count, Fn&& fn) {
+    if (count <= 1) {
+        std::vector<uint8_t> ctx(65536, 0);
+        for (size_t i = 0; i < count; ++i) fn(i, ctx.data());
+        return;
+    }
+    const unsigned hw = std::thread::hardware_concurrency();
+    const size_t n_threads = std::min<size_t>(count, hw > 0 ? hw : 4u);
+    if (n_threads <= 1) {
+        std::vector<uint8_t> ctx(65536, 0);
+        for (size_t i = 0; i < count; ++i) fn(i, ctx.data());
+        return;
+    }
+    std::atomic<size_t> next{0};
+    std::vector<std::thread> workers;
+    workers.reserve(n_threads - 1);
+    auto worker = [&]() {
+        std::vector<uint8_t> ctx(65536, 0);
+        for (;;) {
+            const size_t i = next.fetch_add(1, std::memory_order_relaxed);
+            if (i >= count) break;
+            fn(i, ctx.data());
+        }
+    };
+    for (size_t t = 1; t < n_threads; ++t) workers.emplace_back(worker);
+    worker();
+    for (auto& w : workers) w.join();
+}
 void WritePageInfo(std::vector<uint8_t>& file, uint32_t& seg, uint32_t page, const Bitmap1bppView& bmp) {
     WriteSegHdr(file, seg++, 48, page, 19);
     PushBE32(file, bmp.width); PushBE32(file, bmp.height);
@@ -176,45 +208,68 @@ std::vector<uint8_t> EncodeLosslessDocumentView(std::span<const Bitmap1bppView> 
 
     std::vector<uint8_t> file = { 0x97, 0x4A, 0x42, 0x32, 0x0D, 0x0A, 0x1A, 0x0A, 0x01 };
     PushBE32(file, static_cast<uint32_t>(pages.size()));
-    std::vector<uint8_t> shared_ctx(65536, 0);
     uint32_t seg = 0;
 
     if (!opts.symbol_coding) {
+        std::vector<std::vector<uint8_t>> gen_payloads(pages.size());
+        RunParallelWithCtx(pages.size(), [&](size_t i, uint8_t* ctx) {
+            gen_payloads[i] = EncodeGenericRegionPayload(pages[i], opts.adaptive_templates, ctx);
+        });
         for (size_t i = 0; i < pages.size(); ++i) {
             const uint32_t page = static_cast<uint32_t>(i + 1);
             WritePageInfo(file, seg, page, pages[i]);
-            const auto gen = EncodeGenericRegionPayload(pages[i], opts.adaptive_templates, shared_ctx.data());
-            WriteSegHdr(file, seg++, 39, page, static_cast<uint32_t>(gen.size()));
-            file.insert(file.end(), gen.begin(), gen.end());
+            WriteSegHdr(file, seg++, 39, page, static_cast<uint32_t>(gen_payloads[i].size()));
+            file.insert(file.end(), gen_payloads[i].begin(), gen_payloads[i].end());
             WriteSegHdr(file, seg++, 49, page, 0);
         }
         WriteSegHdr(file, seg++, 51, 0, 0);
         return file;
     }
 
-    // Symbol-Coding mit Multi-Page Global-Dict & garantiertem Per-Page-Auto-Fallback (<= 0 %)
+    // Symbol-Coding mit Multi-Page Global-Dict & parallelem Generic-/Residual-Encoding
     auto plan = detail::BuildDocumentSymbolPlan(pages);
     std::vector<std::vector<uint8_t>> gen_payloads(pages.size());
     std::vector<std::vector<uint8_t>> res_payloads(pages.size());
-    std::vector<bool> use_sym(pages.size(), false);
-    int64_t total_saved = 0;
+    std::vector<uint8_t> use_sym(pages.size(), 0);
 
+    struct EncJob { size_t page_idx; bool is_residual; };
+    std::vector<EncJob> jobs;
+    jobs.reserve(pages.size() * 2);
     for (size_t i = 0; i < pages.size(); ++i) {
-        gen_payloads[i] = EncodeGenericRegionPayload(pages[i], opts.adaptive_templates, shared_ctx.data());
+        jobs.push_back({i, false});
         if (plan.valid && plan.page_has_text[i]) {
+            jobs.push_back({i, true});
+        }
+    }
+
+    RunParallelWithCtx(jobs.size(), [&](size_t j, uint8_t* ctx) {
+        const EncJob& job = jobs[j];
+        const size_t i = job.page_idx;
+        if (!job.is_residual) {
+            gen_payloads[i] = EncodeGenericRegionPayload(pages[i], opts.adaptive_templates, ctx);
+        } else {
             Bitmap1bppView res_view = pages[i];
             res_view.pixels = plan.residuals[i].data();
             res_view.pixel_bytes = plan.residuals[i].size();
-            res_payloads[i] = EncodeGenericRegionPayload(res_view, opts.adaptive_templates, shared_ctx.data());
+            res_payloads[i] = EncodeGenericRegionPayload(res_view, opts.adaptive_templates, ctx);
+        }
+    });
+
+    int64_t total_saved = 0;
+    for (size_t i = 0; i < pages.size(); ++i) {
+        if (plan.valid && plan.page_has_text[i]) {
+            const size_t gen_size = gen_payloads[i].size();
             const size_t sym_page_cost = plan.text_payloads[i].size() + 12u + res_payloads[i].size();
-            if (sym_page_cost < gen_payloads[i].size()) {
-                use_sym[i] = true;
-                total_saved += static_cast<int64_t>(gen_payloads[i].size() - sym_page_cost);
+            const size_t min_page_saving = gen_size / 100u;
+            if (sym_page_cost + min_page_saving < gen_size) {
+                use_sym[i] = 1;
+                total_saved += static_cast<int64_t>(gen_size - sym_page_cost);
             }
         }
     }
 
-    const bool emit_global_dict = plan.valid && total_saved > static_cast<int64_t>(plan.dict_payload.size() + 12u);
+    const int64_t dict_cost = static_cast<int64_t>(plan.dict_payload.size() + 12u);
+    const bool emit_global_dict = plan.valid && total_saved > dict_cost;
     uint32_t sd_seg = 0;
     if (emit_global_dict) {
         sd_seg = seg++;
@@ -240,7 +295,6 @@ std::vector<uint8_t> EncodeLosslessDocumentView(std::span<const Bitmap1bppView> 
     WriteSegHdr(file, seg++, 51, 0, 0);
     return file;
 }
-
 std::vector<uint8_t> EncodeLosslessDocument(std::span<const Bitmap1bpp> pages, LosslessEncodeOptions opts) {
     std::vector<Bitmap1bppView> views; views.reserve(pages.size());
     for (const auto& p : pages) views.push_back({ p.pixels.data(), p.pixels.size(), p.width, p.height, p.stride, p.dpi_x, p.dpi_y });
@@ -253,3 +307,5 @@ std::vector<uint8_t> EncodeLosslessPage(const Bitmap1bpp& b, LosslessEncodeOptio
 }
 
 } // namespace jbig2
+
+

@@ -1,15 +1,49 @@
 #include "jbig2_mq_internal.h"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cstdint>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 namespace jbig2::detail {
 namespace {
 
+// Schwellenwerte für den Seiten-Early-Exit
+constexpr uint32_t kMinPageInstances   = 32; // Mind. N geclusterte Glyphen auf der Seite
+constexpr uint32_t kMinPageMatchPct    = 35; // Trennt Textseiten (44-76%) sauber von Dither-Scans (9-26%)
+constexpr uint32_t kMaxPageRefinedPct  = 88; // Max. % Refinement-Instanzen
+
+template <typename Fn>
+void RunParallel(size_t count, Fn&& fn) {
+    if (count == 0) return;
+    const unsigned hw = std::thread::hardware_concurrency();
+    const size_t num_threads = std::min<size_t>(count, hw ? static_cast<size_t>(hw) : 4u);
+    if (num_threads <= 1) {
+        for (size_t i = 0; i < count; ++i) fn(i);
+        return;
+    }
+
+    std::atomic<size_t> next_idx{0};
+    auto worker = [&]() {
+        for (;;) {
+            const size_t i = next_idx.fetch_add(1, std::memory_order_relaxed);
+            if (i >= count) break;
+            fn(i);
+        }
+    };
+
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads - 1);
+    for (size_t t = 1; t < num_threads; ++t) threads.emplace_back(worker);
+    worker();
+    for (auto& th : threads) th.join();
+}
+
 struct BBox { uint32_t x0 = 0xFFFFFFFFu, y0 = 0xFFFFFFFFu, x1 = 0, y1 = 0, count = 0; };
+struct Run  { uint32_t y, x0, x1, label; }; // halb-offen [x0, x1)
 
 struct Glyph {
     uint32_t page_idx, x, y, w, h, black_cnt;
@@ -87,18 +121,17 @@ inline uint32_t HammingShift(const Glyph& a, const Glyph& b, int ref_dx, int ref
     return d;
 }
 
-// 1-Pass-BBox 4-Connected-Component-Labeling mit 0xFF-Byte-Skipping & Puffer-Wiederverwendung
+// Run-Length-basiertes 4-Connected-Component-Labeling ohne Vollbild-Label-Array
 void ExtractGlyphsForPage(const Bitmap1bppView& bmp, uint32_t page_idx,
-                          std::vector<uint32_t>& labels, std::vector<Glyph>& out) {
+                          std::vector<Run>& runs, std::vector<Glyph>& out) {
     const uint32_t w = bmp.width, h = bmp.height;
-    const size_t total_px = static_cast<size_t>(w) * h;
-    if (labels.size() < total_px) labels.resize(total_px);
-    std::memset(labels.data(), 0, total_px * sizeof(uint32_t));
+    runs.clear();
+    if (runs.capacity() < 65536) runs.reserve(65536);
 
     std::vector<uint32_t> parent(1, 0);
     std::vector<BBox> boxes(1);
-    parent.reserve(4096);
-    boxes.reserve(4096);
+    parent.reserve(8192);
+    boxes.reserve(8192);
 
     auto find = [&](uint32_t x) {
         while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
@@ -111,51 +144,98 @@ void ExtractGlyphsForPage(const Bitmap1bppView& bmp, uint32_t page_idx,
 
     const uint32_t full_bytes = w >> 3;
     const uint32_t rem_bits = w & 7u;
+    const uint32_t byte_cnt = full_bytes + (rem_bits ? 1u : 0u);
     const uint8_t tail_mask = rem_bits ? static_cast<uint8_t>(0xFFu << (8u - rem_bits)) : 0u;
 
+    size_t prev_beg = 0, prev_end = 0;
+
     for (uint32_t y = 0; y < h; ++y) {
-        uint32_t* row = labels.data() + static_cast<size_t>(y) * w;
-        const uint32_t* up = (y > 0) ? (row - w) : nullptr;
         const uint8_t* prow = bmp.pixels + static_cast<size_t>(y) * bmp.stride;
-        const uint32_t byte_cnt = full_bytes + (rem_bits ? 1u : 0u);
+        const size_t cur_beg = runs.size();
+        bool in_run = false;
+        uint32_t run_x0 = 0;
 
         for (uint32_t bx = 0; bx < byte_cnt; ++bx) {
             uint8_t inv = static_cast<uint8_t>(~prow[bx]);
             if (bx == full_bytes) inv &= tail_mask;
-            if (inv == 0u) continue; // 8 weiße Pixel in 1 Takt überspringen
 
-            while (inv) {
-                const uint32_t bit = static_cast<uint32_t>(std::countl_zero(inv));
-                inv &= static_cast<uint8_t>(~(0x80u >> bit));
-                const uint32_t x = (bx << 3) + bit;
-                const uint32_t l = (x > 0) ? row[x - 1] : 0;
-                const uint32_t u = up ? up[x] : 0;
-
-                uint32_t id;
-                if (l && u) {
-                    id = (l < u) ? l : u;
-                    if (l != u) unite(l, u);
-                } else if (l) {
-                    id = l;
-                } else if (u) {
-                    id = u;
-                } else {
-                    id = static_cast<uint32_t>(parent.size());
-                    parent.push_back(id);
-                    boxes.push_back({x, y, x, y, 0});
+            if (inv == 0u) {
+                if (in_run) {
+                    runs.push_back({y, run_x0, bx << 3, 0});
+                    in_run = false;
                 }
-                row[x] = id;
-                BBox& b = boxes[id];
-                if (x < b.x0) b.x0 = x;
-                if (x > b.x1) b.x1 = x;
-                if (y < b.y0) b.y0 = y;
-                if (y > b.y1) b.y1 = y;
-                b.count++;
+                continue;
+            }
+            if (inv == 0xFFu && bx < full_bytes) {
+                if (!in_run) {
+                    in_run = true;
+                    run_x0 = bx << 3;
+                }
+                continue;
+            }
+
+            const uint32_t bits_in_byte = (bx < full_bytes) ? 8u : rem_bits;
+            uint32_t b = 0;
+            while (b < bits_in_byte) {
+                const uint8_t shifted = static_cast<uint8_t>(inv << b);
+                if (!in_run) {
+                    if (shifted == 0u) break;
+                    const uint32_t z = static_cast<uint32_t>(std::countl_zero(shifted));
+                    b += z;
+                    if (b >= bits_in_byte) break;
+                    in_run = true;
+                    run_x0 = (bx << 3) + b;
+                } else {
+                    const uint32_t o = static_cast<uint32_t>(std::countl_one(shifted));
+                    if (b + o >= bits_in_byte) break;
+                    b += o;
+                    runs.push_back({y, run_x0, (bx << 3) + b, 0});
+                    in_run = false;
+                }
             }
         }
+        if (in_run) {
+            runs.push_back({y, run_x0, w, 0});
+        }
+
+        const size_t cur_end = runs.size();
+        size_t pi = prev_beg;
+        for (size_t ci = cur_beg; ci < cur_end; ++ci) {
+            Run& cr = runs[ci];
+            while (pi < prev_end && runs[pi].x1 <= cr.x0) ++pi;
+
+            uint32_t id = 0;
+            size_t pj = pi;
+            while (pj < prev_end && runs[pj].x0 < cr.x1) {
+                const uint32_t pl = runs[pj].label;
+                if (id == 0) {
+                    id = pl;
+                } else if (id != pl) {
+                    unite(id, pl);
+                    if (pl < id) id = pl;
+                }
+                ++pj;
+            }
+            if (pj > pi) pi = pj - 1;
+
+            if (id == 0) {
+                id = static_cast<uint32_t>(parent.size());
+                parent.push_back(id);
+                boxes.push_back({cr.x0, y, cr.x1 - 1u, y, cr.x1 - cr.x0});
+            } else {
+                BBox& b = boxes[id];
+                if (cr.x0 < b.x0) b.x0 = cr.x0;
+                if (cr.x1 - 1u > b.x1) b.x1 = cr.x1 - 1u;
+                if (y > b.y1) b.y1 = y;
+                b.count += (cr.x1 - cr.x0);
+            }
+            cr.label = id;
+        }
+        prev_beg = cur_beg;
+        prev_end = cur_end;
     }
 
-    // Root-Kompression & O(Komponenten)-BBox-Merge (Pass 2 über das Gesamtbild entfällt!)
+    // Root-Kompression & O(Komponenten)-BBox-Merge
     for (uint32_t i = 1; i < parent.size(); ++i) {
         const uint32_t r = parent[parent[i]];
         parent[i] = r;
@@ -171,7 +251,8 @@ void ExtractGlyphsForPage(const Bitmap1bppView& bmp, uint32_t page_idx,
         }
     }
 
-    // Nur überlebende Buchstaben-Kandidaten aus labels extrahieren
+    // Überlebende Buchstaben-Kandidaten voranlegen
+    std::vector<uint32_t> root_to_out(boxes.size(), 0xFFFFFFFFu);
     for (uint32_t r = 1; r < boxes.size(); ++r) {
         const BBox& b = boxes[r];
         if (b.count < 22) continue;
@@ -179,18 +260,22 @@ void ExtractGlyphsForPage(const Bitmap1bppView& bmp, uint32_t page_idx,
         const uint32_t bh = b.y1 - b.y0 + 1;
         if (bw < 6 || bw > 64 || bh < 8 || bh > 72 || bw * bh < 72) continue;
 
-        Glyph g{page_idx, b.x0, b.y0, bw, bh, b.count,
-                (bw == 64u) ? ~uint64_t{0} : ((uint64_t{1} << bw) - 1u), {}};
-        for (uint32_t yy = 0; yy < bh; ++yy) {
-            const uint32_t* lrow = labels.data() + static_cast<size_t>(b.y0 + yy) * w + b.x0;
-            uint64_t bits = 0;
-            for (uint32_t xx = 0; xx < bw; ++xx) {
-                const uint32_t lbl = lrow[xx];
-                if (lbl && parent[lbl] == r) bits |= (uint64_t{1} << xx);
-            }
-            g.rows[yy] = bits;
-        }
-        out.push_back(g);
+        root_to_out[r] = static_cast<uint32_t>(out.size());
+        out.push_back(Glyph{
+            page_idx, b.x0, b.y0, bw, bh, b.count,
+            (bw == 64u) ? ~uint64_t{0} : ((uint64_t{1} << bw) - 1u), {}
+        });
+    }
+
+    // Einziger linearer Pass über alle Runs: 64-Bit-Zeilenmasken in O(1) setzen
+    for (const Run& r : runs) {
+        const uint32_t oi = root_to_out[parent[r.label]];
+        if (oi == 0xFFFFFFFFu) continue;
+        Glyph& g = out[oi];
+        const uint32_t shift = r.x0 - g.x;
+        const uint32_t len = r.x1 - r.x0;
+        const uint64_t m = (len == 64u) ? ~uint64_t{0} : (((uint64_t{1} << len) - 1u) << shift);
+        g.rows[r.y - g.y] |= m;
     }
 }
 
@@ -198,14 +283,51 @@ void ExtractGlyphsForPage(const Bitmap1bppView& bmp, uint32_t page_idx,
 
 DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages) {
     DocumentSymbolPlan plan;
-    std::vector<Glyph> glyphs;
-    glyphs.reserve(pages.size() * 1500);
-    std::vector<uint32_t> labels;
-    for (uint32_t p = 0; p < pages.size(); ++p) ExtractGlyphsForPage(pages[p], p, labels, glyphs);
-    labels.clear();
-    labels.shrink_to_fit();
-    if (glyphs.size() < 12) return plan;
+    if (pages.empty()) return plan;
 
+    // 1. Parallele Run-Length-CCL-Extraktion pro Seite (mit thread-lokalem Runs-Puffer)
+    std::vector<std::vector<Glyph>> page_glyphs(pages.size());
+    if (pages.size() == 1) {
+        std::vector<Run> runs;
+        page_glyphs[0].reserve(1500);
+        ExtractGlyphsForPage(pages[0], 0, runs, page_glyphs[0]);
+    } else {
+        const unsigned hw = std::thread::hardware_concurrency();
+        const size_t num_threads = std::min<size_t>(pages.size(), hw ? static_cast<size_t>(hw) : 4u);
+        std::atomic<size_t> next_page{0};
+        auto ccl_worker = [&]() {
+            std::vector<Run> runs;
+            for (;;) {
+                const size_t p = next_page.fetch_add(1, std::memory_order_relaxed);
+                if (p >= pages.size()) break;
+                page_glyphs[p].reserve(1500);
+                ExtractGlyphsForPage(pages[p], static_cast<uint32_t>(p), runs, page_glyphs[p]);
+            }
+        };
+        std::vector<std::thread> threads;
+        threads.reserve(num_threads > 1 ? num_threads - 1 : 0);
+        for (size_t t = 1; t < num_threads; ++t) threads.emplace_back(ccl_worker);
+        ccl_worker();
+        for (auto& th : threads) th.join();
+    }
+
+    // Deterministisches Zusammenführen in strikter Seitenreihenfolge
+    std::vector<uint32_t> page_total_glyphs(pages.size(), 0);
+    size_t total_glyph_cnt = 0;
+    for (size_t p = 0; p < pages.size(); ++p) {
+        page_total_glyphs[p] = static_cast<uint32_t>(page_glyphs[p].size());
+        total_glyph_cnt += page_glyphs[p].size();
+    }
+    if (total_glyph_cnt < 12) return plan;
+
+    std::vector<Glyph> glyphs;
+    glyphs.reserve(total_glyph_cnt);
+    for (size_t p = 0; p < pages.size(); ++p) {
+        glyphs.insert(glyphs.end(), page_glyphs[p].begin(), page_glyphs[p].end());
+        page_glyphs[p].clear();
+        page_glyphs[p].shrink_to_fit();
+    }
+    // 2. Symbol-Clustering über alle Seiten
     struct Member { uint32_t glyph_idx; bool refined; int8_t rdx; int8_t rdy; };
     struct Group { uint32_t proto_idx; std::vector<Member> members; uint32_t exact_cnt = 1; };
     std::vector<Group> groups;
@@ -265,14 +387,54 @@ DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages
             buckets[bidx(g.w, g.h)].push_back(gid);
         }
     }
+    // 3. Early-Exit pro Seite direkt nach dem Clustering
+    std::vector<uint32_t> cand_groups;
+    cand_groups.reserve(groups.size());
+    std::vector<uint32_t> page_matched(pages.size(), 0);
+    std::vector<uint32_t> page_refined(pages.size(), 0);
 
-    std::vector<uint32_t> active_groups;
-    uint32_t total_instances = 0;
     for (uint32_t gi = 0; gi < groups.size(); ++gi) {
         const auto& grp = groups[gi];
         if (grp.members.size() >= 3 || (grp.members.size() == 2 && grp.exact_cnt == 2)) {
+            cand_groups.push_back(gi);
+            for (const Member& m : grp.members) {
+                const uint32_t p = glyphs[m.glyph_idx].page_idx;
+                page_matched[p]++;
+                if (m.refined) page_refined[p]++;
+            }
+        }
+    }
+    if (cand_groups.size() < 2) return plan;
+
+    std::vector<uint8_t> page_active(pages.size(), 0);
+    uint32_t active_page_cnt = 0;
+    for (size_t p = 0; p < pages.size(); ++p) {
+        if (page_matched[p] < kMinPageInstances) continue;
+        if (page_total_glyphs[p] == 0) continue;
+        if (page_matched[p] * 100u < page_total_glyphs[p] * kMinPageMatchPct) continue;
+        if (page_refined[p] * 100u > page_matched[p] * kMaxPageRefinedPct) continue;
+        page_active[p] = 1;
+        active_page_cnt++;
+    }
+    if (active_page_cnt == 0) return plan;
+
+    // 4. Bereinigtes Global-Dict: nur Gruppen behalten, die auf aktiven Seiten tragen
+    std::vector<uint32_t> active_groups;
+    active_groups.reserve(cand_groups.size());
+    uint32_t total_instances = 0;
+    for (uint32_t gi : cand_groups) {
+        const auto& grp = groups[gi];
+        uint32_t act_cnt = 0;
+        uint32_t act_exact = 0;
+        for (const Member& m : grp.members) {
+            if (page_active[glyphs[m.glyph_idx].page_idx]) {
+                act_cnt++;
+                if (!m.refined) act_exact++;
+            }
+        }
+        if (act_cnt >= 3 || (act_cnt == 2 && act_exact == 2)) {
             active_groups.push_back(gi);
-            total_instances += static_cast<uint32_t>(grp.members.size());
+            total_instances += act_cnt;
         }
     }
     if (active_groups.size() < 2 || total_instances < 20) return plan;
@@ -293,11 +455,26 @@ DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages
         dict_proto_indices.push_back(grp.proto_idx);
         for (const Member& m : grp.members) {
             const Glyph& g = glyphs[m.glyph_idx];
+            if (!page_active[g.page_idx]) continue;
             page_insts[g.page_idx].push_back({g.x, g.y + g.h - 1u, g.w, sym_id, m.glyph_idx, m.refined, m.rdx, m.rdy});
         }
     }
 
-    // 1. Globales Symbol Dictionary (Segment 0 Payload)
+    // Aktive Seiten final bestimmen (sequenziell -> kein vector<bool>-Data-Race!)
+    std::vector<size_t> active_pages;
+    active_pages.reserve(active_page_cnt);
+    plan.text_payloads.resize(pages.size());
+    plan.residuals.resize(pages.size());
+    plan.page_has_text.assign(pages.size(), false);
+    for (size_t p = 0; p < pages.size(); ++p) {
+        if (page_active[p] && page_insts[p].size() >= 8) {
+            plan.page_has_text[p] = true;
+            active_pages.push_back(p);
+        }
+    }
+    if (active_pages.empty()) return plan;
+
+    // 5. Globales Symbol Dictionary (Segment 0 Payload)
     const uint32_t num_syms = static_cast<uint32_t>(dict_proto_indices.size());
     std::vector<uint8_t> gb_ctx(65536, 0);
     ArithIntCtx iadh, iadw, iaex;
@@ -330,18 +507,12 @@ DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages
     PushBE32(plan.dict_payload, num_syms);
     PushBE32(plan.dict_payload, num_syms);
     plan.dict_payload.insert(plan.dict_payload.end(), sd_bytes.begin(), sd_bytes.end());
-
-    // 2. Text Regions & Residual-Bitmaps pro Seite
-    plan.text_payloads.resize(pages.size());
-    plan.residuals.resize(pages.size());
-    plan.page_has_text.assign(pages.size(), false);
+    // 6. Parallele Text Regions & Residual-Bitmaps für aktive Seiten
     constexpr int32_t kStrips = 8;
-
-    for (size_t p = 0; p < pages.size(); ++p) {
+    RunParallel(active_pages.size(), [&](size_t ap_idx) {
+        const size_t p = active_pages[ap_idx];
         auto& insts = page_insts[p];
-        if (insts.size() < 8) continue;
 
-        plan.page_has_text[p] = true;
         plan.residuals[p].assign(pages[p].pixels, pages[p].pixels + static_cast<size_t>(pages[p].stride) * pages[p].height);
         for (const Instance& inst : insts) {
             const Glyph& g = glyphs[inst.glyph_idx];
@@ -422,10 +593,10 @@ DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages
         PushBE16(tp, 0x800E);  // SBRTEMPLATE=1, REFCORNER=BOTTOMLEFT(0), LOGSBSTRIPS=3(8), SBREFINE=1
         PushBE32(tp, static_cast<uint32_t>(insts.size()));
         tp.insert(tp.end(), tr_bytes.begin(), tr_bytes.end());
-    }
-
+    });
     plan.valid = true;
     return plan;
 }
 
 } // namespace jbig2::detail
+
