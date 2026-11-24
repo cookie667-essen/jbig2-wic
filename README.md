@@ -1,5 +1,9 @@
 # JBIG2-WIC
 
+> [!NOTE]
+> **Latest Release: [v2.1.0](https://github.com/cookie667-essen/jbig2-wic/releases/latest)** — MQ encoder hot-path tuning & MSVC LTCG (**3.9× faster** than \jbig2.exe\, 110.6 ms for 5 pages) plus automated CI self-tests.
+
+
 A standalone, zero-dependency **Windows Imaging Component (WIC)** codec (`jbig2_wic.dll`) for `.jb2` and `.jbig2` files on Windows 10/11.
 
 ## Features
