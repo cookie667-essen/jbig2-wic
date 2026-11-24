@@ -44,6 +44,7 @@ std::optional<Bitmap1bpp>   DecodePage(std::span<const uint8_t> file_bytes, uint
 struct LosslessEncodeOptions {
     uint8_t template_id = 0;
     bool adaptive_templates = false; // Stufe B: Auto-AT-Optimierung fuer Dither/Raster
+    bool symbol_coding = false; // NEU: Lossless Symbol Dictionary + Text Region
 };
 
 std::vector<uint8_t> EncodeLosslessPage(const Bitmap1bpp& bitmap, LosslessEncodeOptions opts = {});

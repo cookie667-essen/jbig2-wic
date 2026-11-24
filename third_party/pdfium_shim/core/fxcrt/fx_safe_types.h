@@ -48,13 +48,34 @@ public:
         }
     }
 
-    constexpr CheckedNumeric& operator+=(T rhs) {
+    template <typename U>
+        requires std::is_integral_v<U>
+    constexpr CheckedNumeric& operator+=(U rhs) {
         if (!valid_) return *this;
         if constexpr (std::is_unsigned_v<T>) {
-            if (rhs > std::numeric_limits<T>::max() - val_) { valid_ = false; return *this; }
-            val_ += rhs;
+            if constexpr (std::is_signed_v<U>) {
+                if (rhs < 0) {
+                    const uint64_t mag = static_cast<uint64_t>(-(static_cast<int64_t>(rhs) + 1)) + 1u;
+                    if (mag > static_cast<uint64_t>(val_)) { valid_ = false; return *this; }
+                    val_ -= static_cast<T>(mag);
+                } else {
+                    const uint64_t add = static_cast<uint64_t>(rhs);
+                    if (add > static_cast<uint64_t>(std::numeric_limits<T>::max() - val_)) { valid_ = false; return *this; }
+                    val_ += static_cast<T>(add);
+                }
+            } else {
+                if (static_cast<uint64_t>(rhs) > static_cast<uint64_t>(std::numeric_limits<T>::max() - val_)) {
+                    valid_ = false; return *this;
+                }
+                val_ += static_cast<T>(rhs);
+            }
         } else {
-            int64_t r = static_cast<int64_t>(val_) + static_cast<int64_t>(rhs);
+            if constexpr (std::is_unsigned_v<U>) {
+                if (static_cast<uint64_t>(rhs) > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+                    valid_ = false; return *this;
+                }
+            }
+            const int64_t r = static_cast<int64_t>(val_) + static_cast<int64_t>(rhs);
             if (!std::in_range<T>(r)) { valid_ = false; return *this; }
             val_ = static_cast<T>(r);
         }
@@ -65,13 +86,32 @@ public:
         return (*this += rhs.val_);
     }
 
-    constexpr CheckedNumeric& operator-=(T rhs) {
+    template <typename U>
+        requires std::is_integral_v<U>
+    constexpr CheckedNumeric& operator-=(U rhs) {
         if (!valid_) return *this;
         if constexpr (std::is_unsigned_v<T>) {
-            if (rhs > val_) { valid_ = false; return *this; }
-            val_ -= rhs;
+            if constexpr (std::is_signed_v<U>) {
+                if (rhs < 0) {
+                    const uint64_t mag = static_cast<uint64_t>(-(static_cast<int64_t>(rhs) + 1)) + 1u;
+                    if (mag > static_cast<uint64_t>(std::numeric_limits<T>::max() - val_)) { valid_ = false; return *this; }
+                    val_ += static_cast<T>(mag);
+                } else {
+                    const uint64_t sub = static_cast<uint64_t>(rhs);
+                    if (sub > static_cast<uint64_t>(val_)) { valid_ = false; return *this; }
+                    val_ -= static_cast<T>(sub);
+                }
+            } else {
+                if (static_cast<uint64_t>(rhs) > static_cast<uint64_t>(val_)) { valid_ = false; return *this; }
+                val_ -= static_cast<T>(rhs);
+            }
         } else {
-            int64_t r = static_cast<int64_t>(val_) - static_cast<int64_t>(rhs);
+            if constexpr (std::is_unsigned_v<U>) {
+                if (static_cast<uint64_t>(rhs) > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+                    valid_ = false; return *this;
+                }
+            }
+            const int64_t r = static_cast<int64_t>(val_) - static_cast<int64_t>(rhs);
             if (!std::in_range<T>(r)) { valid_ = false; return *this; }
             val_ = static_cast<T>(r);
         }
@@ -118,9 +158,13 @@ public:
     constexpr CheckedNumeric& operator|=(T rhs) { if (valid_) val_ |= rhs; return *this; }
     constexpr CheckedNumeric& operator&=(T rhs) { if (valid_) val_ &= rhs; return *this; }
 
-    friend constexpr CheckedNumeric operator+(CheckedNumeric a, T b) { return a += b; }
+    template <typename U>
+        requires std::is_integral_v<U>
+    friend constexpr CheckedNumeric operator+(CheckedNumeric a, U b) { return a += b; }
     friend constexpr CheckedNumeric operator+(CheckedNumeric a, const CheckedNumeric& b) { return a += b; }
-    friend constexpr CheckedNumeric operator-(CheckedNumeric a, T b) { return a -= b; }
+    template <typename U>
+        requires std::is_integral_v<U>
+    friend constexpr CheckedNumeric operator-(CheckedNumeric a, U b) { return a -= b; }
     friend constexpr CheckedNumeric operator-(CheckedNumeric a, const CheckedNumeric& b) { return a -= b; }
     friend constexpr CheckedNumeric operator*(CheckedNumeric a, T b) { return a *= b; }
     friend constexpr CheckedNumeric operator*(CheckedNumeric a, const CheckedNumeric& b) { return a *= b; }

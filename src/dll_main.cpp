@@ -228,7 +228,8 @@ extern "C" int __stdcall jbig2_encode_multipage_1bpp(
             list.push_back(std::move(bmp));
         }
         jbig2::LosslessEncodeOptions opts;
-        opts.adaptive_templates = (enable_at_tuning != 0);
+        opts.adaptive_templates = ((enable_at_tuning & 1) != 0);
+    opts.symbol_coding = ((enable_at_tuning & 2) != 0);
         auto encoded = jbig2::EncodeLosslessDocument(list, opts);
         if (encoded.empty()) return -2;
         auto* raw = static_cast<uint8_t*>(std::malloc(encoded.size()));

@@ -19,6 +19,7 @@ add_library(jbig2_core STATIC
     src/jbig2_core.cpp
     src/jbig2_file_parser.cpp
     src/jbig2_mq_encoder.cpp
+    src/jbig2_symbol_encoder.cpp
     ${PDFIUM_JBIG2_SOURCES}
     ${PDFIUM_FAX_SOURCES}
 )

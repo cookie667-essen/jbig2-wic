@@ -1,147 +1,22 @@
-#include "jbig2_core.h"
+#include "jbig2_mq_internal.h"
 #include <algorithm>
 #include <array>
-#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <vector>
 
-#if defined(_MSC_VER)
-#define JBIG2_NOINLINE __declspec(noinline)
-#define JBIG2_FORCEINLINE __forceinline
-#else
-#define JBIG2_NOINLINE __attribute__((noinline))
-#define JBIG2_FORCEINLINE inline __attribute__((always_inline))
-#endif
-
 namespace jbig2 {
 namespace {
 
-struct MqState { uint16_t qe; uint8_t nmps; uint8_t nlps; uint8_t sw; };
-constexpr std::array<MqState, 47> kMqTable = {{
-    {0x5601,  1,  1, 1}, {0x3401,  2,  6, 0}, {0x1801,  3,  9, 0}, {0x0AC1,  4, 12, 0},
-    {0x0521,  5, 29, 0}, {0x0221, 38, 33, 0}, {0x5601,  7,  6, 1}, {0x5401,  8, 14, 0},
-    {0x4801,  9, 14, 0}, {0x3801, 10, 14, 0}, {0x3001, 11, 17, 0}, {0x2401, 12, 18, 0},
-    {0x1C01, 13, 20, 0}, {0x1601, 29, 21, 0}, {0x5601, 15, 14, 1}, {0x5401, 16, 14, 0},
-    {0x5101, 17, 15, 0}, {0x4801, 18, 16, 0}, {0x3801, 19, 17, 0}, {0x3401, 20, 18, 0},
-    {0x3001, 21, 19, 0}, {0x2801, 22, 19, 0}, {0x2401, 23, 20, 0}, {0x2201, 24, 21, 0},
-    {0x1C01, 25, 22, 0}, {0x1801, 26, 23, 0}, {0x1601, 27, 24, 0}, {0x1401, 28, 25, 0},
-    {0x1201, 29, 26, 0}, {0x1101, 30, 27, 0}, {0x0AC1, 31, 28, 0}, {0x09C1, 32, 29, 0},
-    {0x08A1, 33, 30, 0}, {0x0521, 34, 31, 0}, {0x0441, 35, 32, 0}, {0x02A1, 36, 33, 0},
-    {0x0221, 37, 34, 0}, {0x0141, 38, 35, 0}, {0x0111, 39, 36, 0}, {0x0085, 40, 37, 0},
-    {0x0049, 41, 38, 0}, {0x0025, 42, 39, 0}, {0x0015, 43, 40, 0}, {0x0009, 44, 41, 0},
-    {0x0005, 45, 42, 0}, {0x0001, 45, 43, 0}, {0x5601, 46, 46, 0}
-}};
+using detail::MqEncoder;
+using detail::PushBE32;
+using detail::WriteSegHdr;
+using detail::WriteSegHdrRef1;
 
 struct AtCoord { int8_t dx; int8_t dy; };
 constexpr std::array<AtCoord, 4> kDefaultAt = {{{3, -1}, {-3, -1}, {2, -2}, {-2, -2}}};
 
-class MqEncoder {
-    uint32_t a_ = 0x8000, c_ = 0;
-    int ct_ = 12, b_ = -1;
-    std::vector<uint8_t> out_;
-    uint8_t* ctx_;
-
-    JBIG2_NOINLINE void ByteOut() {
-        if (b_ == 0xFF) {
-            out_.push_back(0xFF); b_ = static_cast<int>(c_ >> 20); c_ &= 0xFFFFFu; ct_ = 7;
-        } else if (c_ < 0x8000000u) {
-            if (b_ >= 0) out_.push_back(static_cast<uint8_t>(b_));
-            b_ = static_cast<int>(c_ >> 19); c_ &= 0x7FFFFu; ct_ = 8;
-        } else {
-            b_++;
-            if (b_ == 0xFF) {
-                c_ &= 0x7FFFFFFu; out_.push_back(0xFF); b_ = static_cast<int>(c_ >> 20); c_ &= 0xFFFFFu; ct_ = 7;
-            } else {
-                out_.push_back(static_cast<uint8_t>(b_)); b_ = static_cast<int>(c_ >> 19); c_ &= 0x7FFFFu; ct_ = 8;
-            }
-        }
-    }
-
-    JBIG2_FORCEINLINE void Renorm() {
-        int s = std::countl_zero(a_) - 16;
-        if (s < ct_) {
-            a_ <<= s;
-            c_ <<= s;
-            ct_ -= s;
-            return;
-        }
-        do {
-            a_ <<= ct_;
-            c_ <<= ct_;
-            s -= ct_;
-            ByteOut();
-        } while (s >= ct_);
-        if (s > 0) {
-            a_ <<= s;
-            c_ <<= s;
-            ct_ -= s;
-        }
-    }
-
-public:
-    MqEncoder(uint8_t* shared_ctx, size_t reserve_bytes) : ctx_(shared_ctx) {
-        std::memset(ctx_, 0, 65536);
-        out_.reserve(reserve_bytes);
-    }
-
-    JBIG2_FORCEINLINE bool TryEncode8Same(uint16_t cx, int d) {
-        const uint8_t entry = ctx_[cx];
-        if ((entry >> 7) != d) return false;
-        const uint32_t qe8 = static_cast<uint32_t>(kMqTable[entry & 0x7Fu].qe) << 3;
-        if (a_ < 0x8000u + qe8) return false;
-        a_ -= qe8;
-        c_ += qe8;
-        return true;
-    }
-
-    JBIG2_FORCEINLINE void EncodeBit(uint16_t cx, int d) {
-        const uint8_t entry = ctx_[cx];
-        int mps = entry >> 7;
-        const MqState& s = kMqTable[entry & 0x7Fu];
-        a_ -= s.qe;
-        if (d == mps) {
-            if ((a_ & 0x8000u) == 0) {
-                if (a_ < s.qe) a_ = s.qe; else c_ += s.qe;
-                ctx_[cx] = static_cast<uint8_t>((mps << 7) | s.nmps);
-                Renorm();
-            } else {
-                c_ += s.qe;
-            }
-        } else {
-            if (a_ < s.qe) c_ += s.qe; else a_ = s.qe;
-            if (s.sw) mps ^= 1;
-            ctx_[cx] = static_cast<uint8_t>((mps << 7) | s.nlps);
-            Renorm();
-        }
-    }
-
-    std::vector<uint8_t> Finish() {
-        uint32_t tempc = c_ + a_;
-        c_ |= 0xFFFFu;
-        if (c_ >= tempc) c_ -= 0x8000u;
-        c_ <<= ct_; ByteOut(); c_ <<= ct_; ByteOut();
-        if (b_ >= 0 && b_ != 0xFF) out_.push_back(static_cast<uint8_t>(b_));
-        out_.push_back(0xFF); out_.push_back(0xAC);
-        return std::move(out_);
-    }
-};
-
-void PushBE32(std::vector<uint8_t>& v, uint32_t x) {
-    v.push_back(static_cast<uint8_t>((x >> 24) & 0xFF));
-    v.push_back(static_cast<uint8_t>((x >> 16) & 0xFF));
-    v.push_back(static_cast<uint8_t>((x >> 8)  & 0xFF));
-    v.push_back(static_cast<uint8_t>(x & 0xFF));
-}
-void WriteSegHdr(std::vector<uint8_t>& dst, uint32_t seg, uint8_t type, uint32_t page, uint32_t len) {
-    PushBE32(dst, seg);
-    const bool p4 = (page > 255);
-    dst.push_back(static_cast<uint8_t>((type & 0x3Fu) | (p4 ? 0x40u : 0x00u)));
-    dst.push_back(0x00);
-    if (p4) PushBE32(dst, page); else dst.push_back(static_cast<uint8_t>(page));
-    PushBE32(dst, len);
-}
 inline int GetBit(const uint8_t* row, uint32_t x, uint32_t w) {
     return (x >= w) ? 0 : (((row[x >> 3] >> (7 - (x & 7))) & 1) ^ 1);
 }
@@ -197,15 +72,15 @@ std::array<AtCoord, 4> TuneAT(const Bitmap1bppView& bmp) {
     return { cands[0].c, cands[1].c, cands[2].c, cands[3].c };
 }
 
-void AppendPage(std::vector<uint8_t>& file, uint32_t& seg, uint32_t page,
-                const Bitmap1bppView& bmp, LosslessEncodeOptions opts, uint8_t* shared_ctx) {
+std::vector<uint8_t> EncodeGenericRegionPayload(const Bitmap1bppView& bmp, bool adaptive_templates, uint8_t* shared_ctx) {
     const uint32_t w = bmp.width, h = bmp.height;
     std::vector<uint8_t> blank(bmp.stride, 0xFF);
-    const auto at = opts.adaptive_templates ? TuneAT(bmp) : kDefaultAt;
+    const auto at = adaptive_templates ? TuneAT(bmp) : kDefaultAt;
     const bool def_at = std::equal(at.begin(), at.end(), kDefaultAt.begin(),
                                    [](AtCoord a, AtCoord b) { return a.dx == b.dx && a.dy == b.dy; });
 
-    MqEncoder mq(shared_ctx, std::max<size_t>(1024, (static_cast<size_t>(w) * h) / 32));
+    std::memset(shared_ctx, 0, 65536);
+    MqEncoder mq(std::max<size_t>(1024, (static_cast<size_t>(w) * h) / 32));
     int ltp = 0;
     const uint32_t safe_bytes = (w > 4) ? ((w - 4) >> 3) : 0;
 
@@ -215,7 +90,7 @@ void AppendPage(std::vector<uint8_t>& file, uint32_t& seg, uint32_t page,
         const uint8_t* r2 = (y >= 2) ? (bmp.pixels + static_cast<size_t>(y - 2) * bmp.stride) : blank.data();
 
         const int same = RowsEqual(r0, r1, w) ? 1 : 0;
-        mq.EncodeBit(0x9B25, same != ltp);
+        mq.EncodeBit(shared_ctx, 0x9B25, same != ltp);
         ltp = same;
         if (ltp) continue;
 
@@ -229,14 +104,13 @@ void AppendPage(std::vector<uint8_t>& file, uint32_t& seg, uint32_t page,
                 const uint32_t w1 = (static_cast<uint32_t>(static_cast<uint8_t>(~r1[bx])) << 8) | static_cast<uint8_t>(~r1[bx + 1]);
                 const uint32_t w2 = (static_cast<uint32_t>(static_cast<uint8_t>(~r2[bx])) << 8) | static_cast<uint8_t>(~r2[bx + 1]);
 
-                // Fast-Path: 8 identische weiße oder schwarze Pixel in einem Schritt
-                if ((w0 | w1 | w2 | c0 | c1 | c2) == 0 && mq.TryEncode8Same(0x0000, 0)) continue;
+                if ((w0 | w1 | w2 | c0 | c1 | c2) == 0 && mq.TryEncode8Same(shared_ctx, 0x0000, 0)) continue;
                 if (w0 == 0xFFu && w1 == 0xFFFFu && w2 == 0xFFFFu &&
-                    c0 == 0x0Fu && c1 == 0x7Fu && c2 == 0x1Fu && mq.TryEncode8Same(0xFFFF, 1)) continue;
+                    c0 == 0x0Fu && c1 == 0x7Fu && c2 == 0x1Fu && mq.TryEncode8Same(shared_ctx, 0xFFFF, 1)) continue;
 
                 for (int k = 0; k < 8; ++k) {
                     const int d = static_cast<int>((w0 >> (7 - k)) & 1u);
-                    mq.EncodeBit(static_cast<uint16_t>(((c2 & 0x1Fu) << 11) | ((c1 & 0x7Fu) << 4) | (c0 & 0x0Fu)), d);
+                    mq.EncodeBit(shared_ctx, static_cast<uint16_t>(((c2 & 0x1Fu) << 11) | ((c1 & 0x7Fu) << 4) | (c0 & 0x0Fu)), d);
                     c2 = ((c2 << 1) | ((w2 >> (12 - k)) & 1u)) & 0x1Fu;
                     c1 = ((c1 << 1) | ((w1 >> (11 - k)) & 1u)) & 0x7Fu;
                     c0 = ((c0 << 1) | static_cast<uint32_t>(d)) & 0x0Fu;
@@ -244,7 +118,7 @@ void AppendPage(std::vector<uint8_t>& file, uint32_t& seg, uint32_t page,
             }
             for (uint32_t x = safe_bytes << 3; x < w; ++x) {
                 const int d = GetBit(r0, x, w);
-                mq.EncodeBit(static_cast<uint16_t>(((c2 & 0x1Fu) << 11) | ((c1 & 0x7Fu) << 4) | (c0 & 0x0Fu)), d);
+                mq.EncodeBit(shared_ctx, static_cast<uint16_t>(((c2 & 0x1Fu) << 11) | ((c1 & 0x7Fu) << 4) | (c0 & 0x0Fu)), d);
                 c2 = ((c2 << 1) | GetBit(r2, x + 3, w)) & 0x1Fu;
                 c1 = ((c1 << 1) | GetBit(r1, x + 4, w)) & 0x7Fu;
                 c0 = ((c0 << 1) | static_cast<uint32_t>(d)) & 0x0Fu;
@@ -261,8 +135,8 @@ void AppendPage(std::vector<uint8_t>& file, uint32_t& seg, uint32_t page,
                 const uint32_t a2 = GetBitXY(bmp.pixels, bmp.stride, w, ix + at[2].dx, iy + at[2].dy);
                 const uint32_t a3 = GetBitXY(bmp.pixels, bmp.stride, w, ix + at[3].dx, iy + at[3].dy);
                 const int d = GetBit(r0, x, w);
-                mq.EncodeBit(static_cast<uint16_t>((a3 << 15) | ((c2 & 7u) << 12) | (a2 << 11) |
-                                                   (a1 << 10) | ((c1 & 0x1Fu) << 5) | (a0 << 4) | (c0 & 0xFu)), d);
+                mq.EncodeBit(shared_ctx, static_cast<uint16_t>((a3 << 15) | ((c2 & 7u) << 12) | (a2 << 11) |
+                                                               (a1 << 10) | ((c1 & 0x1Fu) << 5) | (a0 << 4) | (c0 & 0xFu)), d);
                 c2 = ((c2 << 1) | GetBit(r2, x + 2, w)) & 7u;
                 c1 = ((c1 << 1) | GetBit(r1, x + 3, w)) & 0x1Fu;
                 c0 = ((c0 << 1) | static_cast<uint32_t>(d)) & 0xFu;
@@ -271,18 +145,24 @@ void AppendPage(std::vector<uint8_t>& file, uint32_t& seg, uint32_t page,
     }
 
     const auto mq_bytes = mq.Finish();
+    std::vector<uint8_t> payload;
+    payload.reserve(26u + mq_bytes.size());
+    PushBE32(payload, w); PushBE32(payload, h); PushBE32(payload, 0); PushBE32(payload, 0);
+    payload.push_back(0x00); payload.push_back(0x08);
+    for (int i = 0; i < 4; ++i) {
+        payload.push_back(static_cast<uint8_t>(at[i].dx));
+        payload.push_back(static_cast<uint8_t>(at[i].dy));
+    }
+    payload.insert(payload.end(), mq_bytes.begin(), mq_bytes.end());
+    return payload;
+}
+
+void WritePageInfo(std::vector<uint8_t>& file, uint32_t& seg, uint32_t page, const Bitmap1bppView& bmp) {
     WriteSegHdr(file, seg++, 48, page, 19);
-    PushBE32(file, w); PushBE32(file, h);
+    PushBE32(file, bmp.width); PushBE32(file, bmp.height);
     PushBE32(file, bmp.dpi_x > 0 ? static_cast<uint32_t>(std::llround(bmp.dpi_x / 0.0254)) : 0);
     PushBE32(file, bmp.dpi_y > 0 ? static_cast<uint32_t>(std::llround(bmp.dpi_y / 0.0254)) : 0);
     file.push_back(0x01); file.push_back(0x00); file.push_back(0x00);
-
-    WriteSegHdr(file, seg++, 39, page, 26u + static_cast<uint32_t>(mq_bytes.size()));
-    PushBE32(file, w); PushBE32(file, h); PushBE32(file, 0); PushBE32(file, 0);
-    file.push_back(0x00); file.push_back(0x08);
-    for (int i = 0; i < 4; ++i) { file.push_back(static_cast<uint8_t>(at[i].dx)); file.push_back(static_cast<uint8_t>(at[i].dy)); }
-    file.insert(file.end(), mq_bytes.begin(), mq_bytes.end());
-    WriteSegHdr(file, seg++, 49, page, 0);
 }
 
 } // namespace
@@ -293,11 +173,70 @@ std::vector<uint8_t> EncodeLosslessDocumentView(std::span<const Bitmap1bppView> 
         if (!p.pixels || p.width == 0 || p.height == 0 || p.stride < (p.width + 7) / 8 ||
             p.pixel_bytes < static_cast<size_t>(p.stride) * p.height) return {};
     }
+
     std::vector<uint8_t> file = { 0x97, 0x4A, 0x42, 0x32, 0x0D, 0x0A, 0x1A, 0x0A, 0x01 };
     PushBE32(file, static_cast<uint32_t>(pages.size()));
     std::vector<uint8_t> shared_ctx(65536, 0);
     uint32_t seg = 0;
-    for (size_t i = 0; i < pages.size(); ++i) AppendPage(file, seg, static_cast<uint32_t>(i + 1), pages[i], opts, shared_ctx.data());
+
+    if (!opts.symbol_coding) {
+        for (size_t i = 0; i < pages.size(); ++i) {
+            const uint32_t page = static_cast<uint32_t>(i + 1);
+            WritePageInfo(file, seg, page, pages[i]);
+            const auto gen = EncodeGenericRegionPayload(pages[i], opts.adaptive_templates, shared_ctx.data());
+            WriteSegHdr(file, seg++, 39, page, static_cast<uint32_t>(gen.size()));
+            file.insert(file.end(), gen.begin(), gen.end());
+            WriteSegHdr(file, seg++, 49, page, 0);
+        }
+        WriteSegHdr(file, seg++, 51, 0, 0);
+        return file;
+    }
+
+    // Symbol-Coding mit Multi-Page Global-Dict & garantiertem Per-Page-Auto-Fallback (<= 0 %)
+    auto plan = detail::BuildDocumentSymbolPlan(pages);
+    std::vector<std::vector<uint8_t>> gen_payloads(pages.size());
+    std::vector<std::vector<uint8_t>> res_payloads(pages.size());
+    std::vector<bool> use_sym(pages.size(), false);
+    int64_t total_saved = 0;
+
+    for (size_t i = 0; i < pages.size(); ++i) {
+        gen_payloads[i] = EncodeGenericRegionPayload(pages[i], opts.adaptive_templates, shared_ctx.data());
+        if (plan.valid && plan.page_has_text[i]) {
+            Bitmap1bppView res_view = pages[i];
+            res_view.pixels = plan.residuals[i].data();
+            res_view.pixel_bytes = plan.residuals[i].size();
+            res_payloads[i] = EncodeGenericRegionPayload(res_view, opts.adaptive_templates, shared_ctx.data());
+            const size_t sym_page_cost = plan.text_payloads[i].size() + 12u + res_payloads[i].size();
+            if (sym_page_cost < gen_payloads[i].size()) {
+                use_sym[i] = true;
+                total_saved += static_cast<int64_t>(gen_payloads[i].size() - sym_page_cost);
+            }
+        }
+    }
+
+    const bool emit_global_dict = plan.valid && total_saved > static_cast<int64_t>(plan.dict_payload.size() + 12u);
+    uint32_t sd_seg = 0;
+    if (emit_global_dict) {
+        sd_seg = seg++;
+        WriteSegHdr(file, sd_seg, 0, 0, static_cast<uint32_t>(plan.dict_payload.size()));
+        file.insert(file.end(), plan.dict_payload.begin(), plan.dict_payload.end());
+    }
+
+    for (size_t i = 0; i < pages.size(); ++i) {
+        const uint32_t page = static_cast<uint32_t>(i + 1);
+        WritePageInfo(file, seg, page, pages[i]);
+        if (emit_global_dict && use_sym[i]) {
+            WriteSegHdrRef1(file, seg++, 7, sd_seg, page, static_cast<uint32_t>(plan.text_payloads[i].size()));
+            file.insert(file.end(), plan.text_payloads[i].begin(), plan.text_payloads[i].end());
+            WriteSegHdr(file, seg++, 39, page, static_cast<uint32_t>(res_payloads[i].size()));
+            file.insert(file.end(), res_payloads[i].begin(), res_payloads[i].end());
+        } else {
+            WriteSegHdr(file, seg++, 39, page, static_cast<uint32_t>(gen_payloads[i].size()));
+            file.insert(file.end(), gen_payloads[i].begin(), gen_payloads[i].end());
+        }
+        WriteSegHdr(file, seg++, 49, page, 0);
+    }
+
     WriteSegHdr(file, seg++, 51, 0, 0);
     return file;
 }

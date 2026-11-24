@@ -1,113 +1,133 @@
-import ctypes
-import subprocess
-import sys
-import tempfile
+import ctypes, struct, subprocess, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-BUILD_DIR = ROOT / "build" / "Release"
-DLL_PATH = BUILD_DIR / "jbig2_wic.dll"
-ENC_TEST = BUILD_DIR / "encoder_test.exe"
-JBIG2_SIG = b"\x97JB2\r\n\x1a\n"
+DLL = ROOT / "build" / "Release" / "jbig2_wic.dll"
+TEST_EXE = ROOT / "build" / "Release" / "encoder_test.exe"
 
-
-class Jbig2PageInput(ctypes.Structure):
+class Page(ctypes.Structure):
     _fields_ = [
-        ("pixels", ctypes.c_void_p),
-        ("width", ctypes.c_uint32),
-        ("height", ctypes.c_uint32),
-        ("stride", ctypes.c_uint32),
-        ("dpi_x", ctypes.c_double),
-        ("dpi_y", ctypes.c_double),
+        ("pixels", ctypes.c_void_p), ("width", ctypes.c_uint32),
+        ("height", ctypes.c_uint32), ("stride", ctypes.c_uint32),
+        ("dpi_x", ctypes.c_double), ("dpi_y", ctypes.c_double),
     ]
 
+lib = ctypes.WinDLL(str(DLL))
+lib.jbig2_encode_multipage_1bpp.argtypes = [
+    ctypes.POINTER(Page), ctypes.c_uint32, ctypes.c_int,
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)), ctypes.POINTER(ctypes.c_size_t),
+]
+lib.jbig2_free_buffer.argtypes = [ctypes.c_void_p]
 
-def make_synthetic_1bpp(width: int, height: int) -> tuple[bytes, int]:
-    """Erzeugt ein 1-Bit-Testbild (1=Weiß, 0=Schwarz) mit Rändern, Streifen & Schachbrett."""
-    stride = (width + 7) // 8
-    buf = bytearray([0xFF] * (stride * height))
-    for y in range(height):
-        row = y * stride
-        if 10 <= y < 30:
-            continue  # Weiße Zeilen für TPGDON-Test
-        for x in range(width):
-            black = False
-            if 30 <= y < 120:
-                black = ((x + y) & 1) == 0  # Schachbrett / Dither
-            elif 120 <= y < 180:
-                black = ((x // 7) & 1) == 0  # Identische Folgezeilen (TPGDON)
+def set_black(buf: bytearray, stride: int, x: int, y: int) -> None:
+    buf[y * stride + (x >> 3)] &= ~(1 << (7 - (x & 7)))
+
+def draw_glyph_f(buf: bytearray, stride: int, ox: int, oy: int, variant: int) -> None:
+    for y in range(13):
+        set_black(buf, stride, ox + 0, oy + y)
+        set_black(buf, stride, ox + 1, oy + y)
+    for x in range(11):
+        set_black(buf, stride, ox + x, oy + 0)
+        set_black(buf, stride, ox + x, oy + 1)
+    for x in range(9):
+        set_black(buf, stride, ox + x, oy + 6)
+        set_black(buf, stride, ox + x, oy + 7)
+    if variant == 0:
+        set_black(buf, stride, ox + 11, oy + 1)
+        set_black(buf, stride, ox + 0, oy + 13)
+    elif variant == 1:
+        set_black(buf, stride, ox + 0, oy + 13)
+    elif variant == 2:
+        set_black(buf, stride, ox + 11, oy + 1)
+    elif variant == 4:
+        set_black(buf, stride, ox + 11, oy + 1)
+        set_black(buf, stride, ox + 12, oy + 1)
+        set_black(buf, stride, ox + 0, oy + 13)
+        set_black(buf, stride, ox + 0, oy + 14)
+
+def draw_glyph_h(buf: bytearray, stride: int, ox: int, oy: int, noise: bool) -> None:
+    for y in range(14):
+        for dx in (0, 1, 9, 10):
+            set_black(buf, stride, ox + dx, oy + y)
+    for x in range(11):
+        set_black(buf, stride, ox + x, oy + 6)
+        set_black(buf, stride, ox + x, oy + 7)
+    if noise:
+        set_black(buf, stride, ox + 2, oy + 5)
+        set_black(buf, stride, ox + 8, oy + 8)
+
+def make_test_page(w: int, h: int, seed_shift: int) -> tuple[ctypes.Array, Page]:
+    stride = (w + 7) // 8
+    buf = bytearray([0xFF] * (stride * h))
+    for row in range(6):
+        y = 24 + row * 40
+        for col in range(12):
+            x = 24 + col * 28
+            if (row + col + seed_shift) % 2 == 0:
+                draw_glyph_f(buf, stride, x, y, (row * 12 + col) % 5)
             else:
-                black = ((x ^ y) % 13) == 0  # Diagonales Muster
-            if black:
-                buf[row + (x >> 3)] &= ~(1 << (7 - (x & 7)))
-    return bytes(buf), stride
+                draw_glyph_h(buf, stride, x, y, ((row + col) % 3) == 1)
+    raw = ctypes.create_string_buffer(bytes(buf), len(buf))
+    return raw, Page(ctypes.addressof(raw), w, h, stride, 300.0, 300.0)
 
+def encode(pages: list[Page], flags: int) -> bytes:
+    arr = (Page * len(pages))(*pages)
+    ptr, sz = ctypes.POINTER(ctypes.c_uint8)(), ctypes.c_size_t(0)
+    rc = lib.jbig2_encode_multipage_1bpp(arr, len(pages), flags, ctypes.byref(ptr), ctypes.byref(sz))
+    assert rc == 0, f"jbig2_encode_multipage_1bpp fehlgeschlagen: rc={rc}"
+    data = ctypes.string_at(ptr, sz.value)
+    lib.jbig2_free_buffer(ptr)
+    return data
+
+def parse_segments(data: bytes) -> list[tuple[int, int, int]]:
+    pos = 13
+    segs = []
+    while pos + 11 <= len(data):
+        seg_num = struct.unpack_from(">I", data, pos)[0]; pos += 4
+        flags = data[pos]; pos += 1
+        seg_type = flags & 0x3F
+        ref_cnt = data[pos] >> 5; pos += 1
+        ref_sz = 1 if seg_num <= 256 else (2 if seg_num <= 65536 else 4)
+        pos += ref_cnt * ref_sz
+        page = struct.unpack_from(">I", data, pos)[0] if (flags & 0x40) else data[pos]
+        pos += 4 if (flags & 0x40) else 1
+        dlen = struct.unpack_from(">I", data, pos)[0]; pos += 4
+        pos += dlen
+        segs.append((seg_type, page, dlen))
+    return segs
+
+def compare_check(ref_data: bytes, test_data: bytes, label: str) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        p_ref, p_tst = Path(td) / "ref.jb2", Path(td) / "tst.jb2"
+        p_ref.write_bytes(ref_data)
+        p_tst.write_bytes(test_data)
+        r = subprocess.run([str(TEST_EXE), "--compare", str(p_ref), str(p_tst)], capture_output=True, text=True)
+        assert r.returncode == 0, f"{label}: encoder_test rc={r.returncode}\n{r.stdout}\n{r.stderr}"
+        assert "0 Bit" in r.stdout, f"{label}: Bit-Abweichung!\n{r.stdout}"
 
 def main() -> int:
-    if not DLL_PATH.is_file() or not ENC_TEST.is_file():
-        print(f"FEHLER: Build-Artefakte fehlen in {BUILD_DIR}")
-        return 1
+    raw0, pg0 = make_test_page(400, 300, 0)
+    gen1 = encode([pg0], 0)
+    sym1 = encode([pg0], 2)
+    compare_check(gen1, gen1, "Single-Page Generic")
+    compare_check(gen1, sym1, "Single-Page Symbol vs Generic")
+    assert len(sym1) < len(gen1), f"Symbol ({len(sym1)} B) nicht kleiner als Generic ({len(gen1)} B)"
+    print(f"[OK] Single-Page: Generic={len(gen1)} B | Symbol={len(sym1)} B ({(len(sym1)-len(gen1))/len(gen1)*100:+.1f}%) | 0 Bit vs Generic")
 
-    lib = ctypes.WinDLL(str(DLL_PATH))
-    lib.jbig2_encode_1bpp.argtypes = [
-        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
-        ctypes.c_double, ctypes.c_double,
-        ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)), ctypes.POINTER(ctypes.c_size_t),
-    ]
-    lib.jbig2_encode_1bpp.restype = ctypes.c_int
-    lib.jbig2_encode_multipage_1bpp.argtypes = [
-        ctypes.POINTER(Jbig2PageInput), ctypes.c_uint32, ctypes.c_int,
-        ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)), ctypes.POINTER(ctypes.c_size_t),
-    ]
-    lib.jbig2_encode_multipage_1bpp.restype = ctypes.c_int
-    lib.jbig2_free_buffer.argtypes = [ctypes.c_void_p]
-
-    w, h = 399, 257  # Ungerade Breite prüft Stride-Alignment
-    pixels, stride = make_synthetic_1bpp(w, h)
-
-    # 1. Single-Page C-API Test
-    out_ptr = ctypes.POINTER(ctypes.c_uint8)()
-    out_sz = ctypes.c_size_t(0)
-    rc = lib.jbig2_encode_1bpp(
-        pixels, w, h, stride, 300.0, 300.0, ctypes.byref(out_ptr), ctypes.byref(out_sz)
-    )
-    assert rc == 0 and out_ptr and out_sz.value > 32, f"Single-Page Encode fehlgeschlagen (rc={rc})"
-    try:
-        single_jb2 = ctypes.string_at(out_ptr, out_sz.value)
-    finally:
-        lib.jbig2_free_buffer(out_ptr)
-    assert single_jb2.startswith(JBIG2_SIG), "Ungueltige JBIG2-Signatur (Single-Page)"
-
-    # 2. Bitgenauer Roundtrip über PDFium-Decoder (encoder_test.exe)
-    with tempfile.TemporaryDirectory() as tmp:
-        in_file = Path(tmp) / "ci_in.jb2"
-        out_file = Path(tmp) / "ci_out.jb2"
-        in_file.write_bytes(single_jb2)
-        res = subprocess.run([str(ENC_TEST), str(in_file), str(out_file)], check=False)
-        assert res.returncode == 0, f"encoder_test.exe fehlgeschlagen (rc={res.returncode})"
-
-    # 3. Multi-Page C-API Test (2 Seiten)
-    buf_ref = ctypes.create_string_buffer(pixels, len(pixels))
-    addr = ctypes.addressof(buf_ref)
-    pages = (Jbig2PageInput * 2)(
-        Jbig2PageInput(addr, w, h, stride, 300.0, 300.0),
-        Jbig2PageInput(addr, w, h, stride, 300.0, 300.0),
-    )
-    mp_ptr = ctypes.POINTER(ctypes.c_uint8)()
-    mp_sz = ctypes.c_size_t(0)
-    rc = lib.jbig2_encode_multipage_1bpp(pages, 2, 0, ctypes.byref(mp_ptr), ctypes.byref(mp_sz))
-    assert rc == 0 and mp_ptr and mp_sz.value > len(single_jb2), f"Multi-Page Encode fehlgeschlagen (rc={rc})"
-    try:
-        mp_jb2 = ctypes.string_at(mp_ptr, mp_sz.value)
-    finally:
-        lib.jbig2_free_buffer(mp_ptr)
-    assert mp_jb2.startswith(JBIG2_SIG), "Ungueltige JBIG2-Signatur (Multi-Page)"
-    page_count = int.from_bytes(mp_jb2[9:13], "big")
-    assert page_count == 2, f"Erwartete 2 Seiten, erhalten: {page_count}"
-
-    print(f"CI Self-Test OK: Single={len(single_jb2)} B | MultiPage(2)={len(mp_jb2)} B | 0 Bit Abweichung")
+    raws, pgs = [], []
+    for i in range(3):
+        r, p = make_test_page(400, 300, i)
+        raws.append(r); pgs.append(p)
+    mgen = encode(pgs, 0)
+    msym = encode(pgs, 2)
+    segs = parse_segments(msym)
+    assert any(t == 0 and p == 0 for t, p, _ in segs), f"Kein globales Segment 0 (Page=0): {segs}"
+    text_pages = {p for t, p, _ in segs if t == 7}
+    assert text_pages == {1, 2, 3}, f"Erwartete Text-Regionen auf Seiten 1..3, erhalten: {text_pages}"
+    assert len(msym) < len(mgen), f"Multi-Page Symbol ({len(msym)} B) nicht kleiner als Generic ({len(mgen)} B)"
+    compare_check(mgen, msym, "Multi-Page Global-Dict vs Generic")
+    print(f"[OK] Multi-Page (3 Seiten): Generic={len(mgen)} B | Symbol={len(msym)} B ({(len(msym)-len(mgen))/len(mgen)*100:+.1f}%) | Global-Dict OK | 0 Bit (alle 3 Seiten)")
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
