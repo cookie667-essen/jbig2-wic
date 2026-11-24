@@ -1,10 +1,19 @@
 #include "jbig2_core.h"
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <vector>
+
+#if defined(_MSC_VER)
+#define JBIG2_NOINLINE __declspec(noinline)
+#define JBIG2_FORCEINLINE __forceinline
+#else
+#define JBIG2_NOINLINE __attribute__((noinline))
+#define JBIG2_FORCEINLINE inline __attribute__((always_inline))
+#endif
 
 namespace jbig2 {
 namespace {
@@ -34,7 +43,7 @@ class MqEncoder {
     std::vector<uint8_t> out_;
     uint8_t* ctx_;
 
-    void ByteOut() {
+    JBIG2_NOINLINE void ByteOut() {
         if (b_ == 0xFF) {
             out_.push_back(0xFF); b_ = static_cast<int>(c_ >> 20); c_ &= 0xFFFFFu; ct_ = 7;
         } else if (c_ < 0x8000000u) {
@@ -49,8 +58,26 @@ class MqEncoder {
             }
         }
     }
-    inline void Renorm() {
-        do { a_ <<= 1; c_ <<= 1; if (--ct_ == 0) ByteOut(); } while ((a_ & 0x8000u) == 0);
+
+    JBIG2_FORCEINLINE void Renorm() {
+        int s = std::countl_zero(a_) - 16;
+        if (s < ct_) {
+            a_ <<= s;
+            c_ <<= s;
+            ct_ -= s;
+            return;
+        }
+        do {
+            a_ <<= ct_;
+            c_ <<= ct_;
+            s -= ct_;
+            ByteOut();
+        } while (s >= ct_);
+        if (s > 0) {
+            a_ <<= s;
+            c_ <<= s;
+            ct_ -= s;
+        }
     }
 
 public:
@@ -58,8 +85,19 @@ public:
         std::memset(ctx_, 0, 65536);
         out_.reserve(reserve_bytes);
     }
-    inline void EncodeBit(uint16_t cx, int d) {
-        uint8_t entry = ctx_[cx];
+
+    JBIG2_FORCEINLINE bool TryEncode8Same(uint16_t cx, int d) {
+        const uint8_t entry = ctx_[cx];
+        if ((entry >> 7) != d) return false;
+        const uint32_t qe8 = static_cast<uint32_t>(kMqTable[entry & 0x7Fu].qe) << 3;
+        if (a_ < 0x8000u + qe8) return false;
+        a_ -= qe8;
+        c_ += qe8;
+        return true;
+    }
+
+    JBIG2_FORCEINLINE void EncodeBit(uint16_t cx, int d) {
+        const uint8_t entry = ctx_[cx];
         int mps = entry >> 7;
         const MqState& s = kMqTable[entry & 0x7Fu];
         a_ -= s.qe;
@@ -68,7 +106,9 @@ public:
                 if (a_ < s.qe) a_ = s.qe; else c_ += s.qe;
                 ctx_[cx] = static_cast<uint8_t>((mps << 7) | s.nmps);
                 Renorm();
-            } else { c_ += s.qe; }
+            } else {
+                c_ += s.qe;
+            }
         } else {
             if (a_ < s.qe) c_ += s.qe; else a_ = s.qe;
             if (s.sw) mps ^= 1;
@@ -76,6 +116,7 @@ public:
             Renorm();
         }
     }
+
     std::vector<uint8_t> Finish() {
         uint32_t tempc = c_ + a_;
         c_ |= 0xFFFFu;
@@ -187,6 +228,12 @@ void AppendPage(std::vector<uint8_t>& file, uint32_t& seg, uint32_t page,
                 const uint32_t w0 = static_cast<uint8_t>(~r0[bx]);
                 const uint32_t w1 = (static_cast<uint32_t>(static_cast<uint8_t>(~r1[bx])) << 8) | static_cast<uint8_t>(~r1[bx + 1]);
                 const uint32_t w2 = (static_cast<uint32_t>(static_cast<uint8_t>(~r2[bx])) << 8) | static_cast<uint8_t>(~r2[bx + 1]);
+
+                // Fast-Path: 8 identische weiße oder schwarze Pixel in einem Schritt
+                if ((w0 | w1 | w2 | c0 | c1 | c2) == 0 && mq.TryEncode8Same(0x0000, 0)) continue;
+                if (w0 == 0xFFu && w1 == 0xFFFFu && w2 == 0xFFFFu &&
+                    c0 == 0x0Fu && c1 == 0x7Fu && c2 == 0x1Fu && mq.TryEncode8Same(0xFFFF, 1)) continue;
+
                 for (int k = 0; k < 8; ++k) {
                     const int d = static_cast<int>((w0 >> (7 - k)) & 1u);
                     mq.EncodeBit(static_cast<uint16_t>(((c2 & 0x1Fu) << 11) | ((c1 & 0x7Fu) << 4) | (c0 & 0x0Fu)), d);

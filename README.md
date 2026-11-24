@@ -13,7 +13,7 @@ A standalone, zero-dependency **Windows Imaging Component (WIC)** codec (`jbig2_
 | Metric | 1-bit PNG | `jbig2.exe -p` | `jbig2_wic.dll` |
 |---|---:|---:|---:|
 | Total Size | 1,234.6 KB | 613.4 KB | **613.6 KB (−50.3% vs PNG)** |
-| Encode Time | — | 401.6 ms | **153.5 ms (2.6× faster)** |
+| Encode Time | — | 429.9 ms | **110.6 ms (3.9× faster)** |
 
 ## Installation (Windows x64)
 Run PowerShell **as Administrator**:

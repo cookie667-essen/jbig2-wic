@@ -37,7 +37,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: jbig2-wic-win64
-          path: jbig2-wic-win64.zip
+          path: dist/
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
