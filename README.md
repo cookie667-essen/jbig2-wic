@@ -1,7 +1,7 @@
 # JBIG2-WIC
 
 > [!NOTE]
-> [![Latest Release](https://img.shields.io/github/v/release/cookie667-essen/jbig2-wic?label=Latest%20Release)](https://github.com/cookie667-essen/jbig2-wic/releases/latest) — Lossless symbol coding (GRRD T1 + multi-page global dictionary), multi-threaded run-length CCL & split generic/residual encoding (7 pages in 44 ms generic / 114 ms symbol, 0-bit diff).
+> [![Latest Release](https://img.shields.io/github/v/release/cookie667-essen/jbig2-wic?label=Latest%20Release)](https://github.com/cookie667-essen/jbig2-wic/releases/latest) — Overlapped generic/symbol encoding (`std::jthread`), dither CCL early-abort & lossless GRRD T1 symbol coding (1.06×–1.29× generic on single pages, ~100 ms for 7 pages, 0-bit diff across 107 test files).
 
 
 A standalone, zero-dependency **Windows Imaging Component (WIC)** codec (`jbig2_wic.dll`) for `.jb2` and `.jbig2` files on Windows 10/11.

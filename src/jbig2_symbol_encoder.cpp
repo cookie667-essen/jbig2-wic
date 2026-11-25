@@ -148,6 +148,7 @@ void ExtractGlyphsForPage(const Bitmap1bppView& bmp, uint32_t page_idx,
     const uint8_t tail_mask = rem_bits ? static_cast<uint8_t>(0xFFu << (8u - rem_bits)) : 0u;
 
     size_t prev_beg = 0, prev_end = 0;
+    uint32_t dither_rows = 0;
 
     for (uint32_t y = 0; y < h; ++y) {
         const uint8_t* prow = bmp.pixels + static_cast<size_t>(y) * bmp.stride;
@@ -199,6 +200,15 @@ void ExtractGlyphsForPage(const Bitmap1bppView& bmp, uint32_t page_idx,
         }
 
         const size_t cur_end = runs.size();
+        uint32_t row_1px = 0;
+        for (size_t ci = cur_beg; ci < cur_end; ++ci) {
+            if (runs[ci].x1 - runs[ci].x0 == 1u) row_1px++;
+        }
+        if (w >= 256u && row_1px * 100u > w * 8u && row_1px * 100u >= (cur_end - cur_beg) * 45u) {
+            if (++dither_rows * 2u > h) {
+                return; // >50% der Gesamthoehe sind reine Dither-/Rauschzeilen
+            }
+        }
         size_t pi = prev_beg;
         for (size_t ci = cur_beg; ci < cur_end; ++ci) {
             Run& cr = runs[ci];

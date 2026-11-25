@@ -227,33 +227,58 @@ std::vector<uint8_t> EncodeLosslessDocumentView(std::span<const Bitmap1bppView> 
     }
 
     // Symbol-Coding mit Multi-Page Global-Dict & parallelem Generic-/Residual-Encoding
-    auto plan = detail::BuildDocumentSymbolPlan(pages);
     std::vector<std::vector<uint8_t>> gen_payloads(pages.size());
     std::vector<std::vector<uint8_t>> res_payloads(pages.size());
     std::vector<uint8_t> use_sym(pages.size(), 0);
 
-    struct EncJob { size_t page_idx; bool is_residual; };
-    std::vector<EncJob> jobs;
-    jobs.reserve(pages.size() * 2);
-    for (size_t i = 0; i < pages.size(); ++i) {
-        jobs.push_back({i, false});
-        if (plan.valid && plan.page_has_text[i]) {
-            jobs.push_back({i, true});
+    // Generic-Encoding parallel zu BuildDocumentSymbolPlan ueberlappen (mit Thread-Budget)
+    std::jthread gen_worker([&]() {
+        if (pages.size() <= 1) {
+            if (!pages.empty()) {
+                std::vector<uint8_t> ctx(65536, 0);
+                gen_payloads[0] = EncodeGenericRegionPayload(pages[0], opts.adaptive_templates, ctx.data());
+            }
+            return;
+        }
+        const unsigned hw = std::thread::hardware_concurrency();
+        const size_t gen_threads = std::min<size_t>(pages.size(), std::max<size_t>(1u, (hw ? hw : 4u) / 2u));
+        std::atomic<size_t> next_gen{0};
+        auto worker = [&]() {
+            std::vector<uint8_t> ctx(65536, 0);
+            for (;;) {
+                const size_t i = next_gen.fetch_add(1, std::memory_order_relaxed);
+                if (i >= pages.size()) break;
+                gen_payloads[i] = EncodeGenericRegionPayload(pages[i], opts.adaptive_templates, ctx.data());
+            }
+        };
+        std::vector<std::jthread> pool;
+        pool.reserve(gen_threads > 1 ? gen_threads - 1 : 0);
+        for (size_t t = 1; t < gen_threads; ++t) pool.emplace_back(worker);
+        worker();
+    });
+
+    auto plan = detail::BuildDocumentSymbolPlan(pages);
+    gen_worker.join();
+
+    // Nur aktive Text-Seiten benoetigen noch Residual-Encoding (danach Residual-RAM direkt freigeben)
+    std::vector<size_t> res_pages;
+    if (plan.valid) {
+        res_pages.reserve(pages.size());
+        for (size_t i = 0; i < pages.size(); ++i) {
+            if (plan.page_has_text[i]) res_pages.push_back(i);
         }
     }
-
-    RunParallelWithCtx(jobs.size(), [&](size_t j, uint8_t* ctx) {
-        const EncJob& job = jobs[j];
-        const size_t i = job.page_idx;
-        if (!job.is_residual) {
-            gen_payloads[i] = EncodeGenericRegionPayload(pages[i], opts.adaptive_templates, ctx);
-        } else {
+    if (!res_pages.empty()) {
+        RunParallelWithCtx(res_pages.size(), [&](size_t r_idx, uint8_t* ctx) {
+            const size_t i = res_pages[r_idx];
             Bitmap1bppView res_view = pages[i];
             res_view.pixels = plan.residuals[i].data();
             res_view.pixel_bytes = plan.residuals[i].size();
             res_payloads[i] = EncodeGenericRegionPayload(res_view, opts.adaptive_templates, ctx);
-        }
-    });
+            plan.residuals[i].clear();
+            plan.residuals[i].shrink_to_fit();
+        });
+    }
 
     int64_t total_saved = 0;
     for (size_t i = 0; i < pages.size(); ++i) {
