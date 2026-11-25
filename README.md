@@ -1,7 +1,7 @@
 # JBIG2-WIC
 
 > [!NOTE]
-> **Latest Release: [v2.1.0](https://github.com/cookie667-essen/jbig2-wic/releases/latest)** — MQ encoder hot-path tuning & MSVC LTCG (**3.9× faster** than `jbig2.exe`, 110.6 ms for 5 pages) plus automated CI self-tests.
+> [![Latest Release](https://img.shields.io/github/v/release/cookie667-essen/jbig2-wic?label=Latest%20Release)](https://github.com/cookie667-essen/jbig2-wic/releases/latest) — Lossless symbol coding (GRRD T1 + multi-page global dictionary), multi-threaded run-length CCL & split generic/residual encoding (7 pages in 44 ms generic / 114 ms symbol, 0-bit diff).
 
 
 A standalone, zero-dependency **Windows Imaging Component (WIC)** codec (`jbig2_wic.dll`) for `.jb2` and `.jbig2` files on Windows 10/11.
