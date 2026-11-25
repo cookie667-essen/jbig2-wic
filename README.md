@@ -31,6 +31,12 @@ cmake -B build -A x64
 cmake --build build --config Release
 ```
 
+## Documentation
+
+- [Architecture & Encoding Pipeline](docs/ARCHITECTURE.md) — MQ coder, Run-Length 4-CCL, GRRD T1 refinement, std::jthread overlap
+- [Benchmarks](docs/BENCHMARKS.md) — Progression (v2.1 to v2.3) and 107-file multi-category corpus (-49.7% vs. PNG, 0-bit diff)
+- [Changelog](CHANGELOG.md) — Release history
+
 ## License
 - Codec & MQ Encoder: **BSD-3-Clause License**
 - Vendored PDFium JBIG2/Fax decoder: **BSD-3-Clause** (see `third_party/pdfium/LICENSE`)
