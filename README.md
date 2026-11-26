@@ -1,7 +1,7 @@
 # JBIG2-WIC
 
 > [!NOTE]
-> [![Latest Release](https://img.shields.io/github/v/release/cookie667-essen/jbig2-wic?label=Latest%20Release)](https://github.com/cookie667-essen/jbig2-wic/releases/latest) — Overlapped generic/symbol encoding (`std::jthread`), dither CCL early-abort & lossless GRRD T1 symbol coding (1.06×–1.29× generic on single pages, ~100 ms for 7 pages, 0-bit diff across 107 test files).
+> [![Latest Release](https://img.shields.io/github/v/release/cookie667-essen/jbig2-wic?label=Latest%20Release)](https://github.com/cookie667-essen/jbig2-wic/releases/latest) — Optional `LossySafe` symbol coding (4-stage Xerox guard, up to -51% vs. generic), overlapped `std::jthread` planning & 0-bit lossless GRRD T1 symbol coding.
 
 
 A standalone, zero-dependency **Windows Imaging Component (WIC)** codec (`jbig2_wic.dll`) for `.jb2` and `.jbig2` files on Windows 10/11.
@@ -14,7 +14,7 @@ A standalone, zero-dependency **Windows Imaging Component (WIC)** codec (`jbig2_
 - **Zero-Copy C API:** Exported `jbig2_encode_1bpp` and `jbig2_encode_multipage_1bpp` for direct in-memory encoding from Python (`ctypes`) or C/C++.
 - **Single-File DLL:** Statically linked CRT (`/MT`) — no VC++ Redistributable required.
 
-## Benchmarks (v2.3.0, 0-Bit Lossless)
+## Benchmarks (v2.4.0)
 
 | Dataset (Multi-Page) | Orig PNG | `jbig2.exe` Gen (Net) | `jbig2-wic` Gen | `jbig2-wic` Sym | vs. PNG | Speedup vs. `jbig2.exe` |
 |---|---:|---:|---:|---:|---:|---:|
@@ -22,6 +22,8 @@ A standalone, zero-dependency **Windows Imaging Component (WIC)** codec (`jbig2_
 | **107-File Corpus** | 4,495.4 KB | 2,475.9 KB\* (2,013.1 ms) | 2,473.8 KB (126.0 ms) | **2,262.4 KB** (305.0 ms) | **-49.7%** | **16.0x** Gen / **6.6x** Sym |
 
 \* `jbig2.exe` (`jbig2enc`) fed uncompressed P4 PBM from OS cache (6.8 ms/call process spawn subtracted). It passes 106/107 files (crashes with `rc=3` on `1x1` black) and its lossless symbol mode (`-s -r`) is broken/disabled upstream. `jbig2-wic` passes **107/107** with **0-bit diff**. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the full breakdown.
+
+**LossySafe (`flags=6`):** Cuts the 7-page scan set further to **606.0 KB** (-56.4% vs. PNG / -9.5% vs. Generic in 137.2 ms) and achieves **-25% to -51% vs. Generic** on external 200-300 DPI Leptonica/Tesseract scans with **0** 2x2 structural error blocks.
 
 ## Installation (Windows x64)
 Run PowerShell **as Administrator**:
