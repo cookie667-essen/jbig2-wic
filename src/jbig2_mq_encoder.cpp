@@ -210,7 +210,7 @@ std::vector<uint8_t> EncodeLosslessDocumentView(std::span<const Bitmap1bppView> 
     PushBE32(file, static_cast<uint32_t>(pages.size()));
     uint32_t seg = 0;
 
-    if (!opts.symbol_coding) {
+    if (!opts.symbol_coding && !opts.lossy_symbol) {
         std::vector<std::vector<uint8_t>> gen_payloads(pages.size());
         RunParallelWithCtx(pages.size(), [&](size_t i, uint8_t* ctx) {
             gen_payloads[i] = EncodeGenericRegionPayload(pages[i], opts.adaptive_templates, ctx);
@@ -257,7 +257,7 @@ std::vector<uint8_t> EncodeLosslessDocumentView(std::span<const Bitmap1bppView> 
         worker();
     });
 
-    auto plan = detail::BuildDocumentSymbolPlan(pages);
+    auto plan = detail::BuildDocumentSymbolPlan(pages, opts.lossy_symbol);
     gen_worker.join();
 
     // Nur aktive Text-Seiten benoetigen noch Residual-Encoding (danach Residual-RAM direkt freigeben)

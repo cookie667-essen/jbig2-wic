@@ -121,6 +121,126 @@ inline uint32_t HammingShift(const Glyph& a, const Glyph& b, int ref_dx, int ref
     return d;
 }
 
+// 64-Bit-Bitmasken-Floodfill: zaehlt umschlossene weisse Loecher (>= 2 px) fuer Topologie-Schutz
+uint8_t CountHoles(const Glyph& g) {
+    if (g.w < 3 || g.h < 3) return 0;
+    std::array<uint64_t, 72> white{};
+    std::array<uint64_t, 72> ext{};
+    const uint64_t border_x = 1ULL | (1ULL << (g.w - 1u));
+    for (uint32_t y = 0; y < g.h; ++y) {
+        white[y] = (~g.rows[y]) & g.mask;
+        ext[y] = (y == 0 || y + 1u == g.h) ? white[y] : (white[y] & border_x);
+    }
+    auto expandRow = [](uint64_t m, uint64_t dom) {
+        for (;;) {
+            const uint64_t next = (m | (m << 1) | (m >> 1)) & dom;
+            if (next == m) return m;
+            m = next;
+        }
+    };
+    auto flood = [&](std::array<uint64_t, 72>& mask, const std::array<uint64_t, 72>& dom) {
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (uint32_t y = 0; y < g.h; ++y) {
+                uint64_t m = mask[y];
+                if (y > 0) m |= mask[y - 1];
+                if (y + 1u < g.h) m |= mask[y + 1];
+                m &= dom[y];
+                if (m != mask[y]) {
+                    m = expandRow(m, dom[y]);
+                    if (m != mask[y]) { mask[y] = m; changed = true; }
+                }
+            }
+            for (int y = static_cast<int>(g.h) - 1; y >= 0; --y) {
+                uint64_t m = mask[y];
+                if (y > 0) m |= mask[y - 1];
+                if (y + 1 < static_cast<int>(g.h)) m |= mask[y + 1];
+                m &= dom[y];
+                if (m != mask[y]) {
+                    m = expandRow(m, dom[y]);
+                    if (m != mask[y]) { mask[y] = m; changed = true; }
+                }
+            }
+        }
+    };
+    for (uint32_t y = 0; y < g.h; ++y) ext[y] = expandRow(ext[y], white[y]);
+    flood(ext, white);
+
+    std::array<uint64_t, 72> rem{};
+    uint64_t any_rem = 0;
+    for (uint32_t y = 0; y < g.h; ++y) {
+        rem[y] = white[y] & ~ext[y];
+        any_rem |= rem[y];
+    }
+    if (!any_rem) return 0;
+
+    uint8_t holes = 0;
+    for (uint32_t sy = 0; sy < g.h; ++sy) {
+        while (rem[sy]) {
+            std::array<uint64_t, 72> comp{};
+            comp[sy] = expandRow(rem[sy] & (~rem[sy] + 1ULL), rem[sy]);
+            flood(comp, rem);
+            uint32_t area = 0;
+            for (uint32_t y = 0; y < g.h; ++y) {
+                if (comp[y]) {
+                    area += static_cast<uint32_t>(std::popcount(comp[y]));
+                    rem[y] &= ~comp[y];
+                }
+            }
+            if (area >= 2u && holes < 15u) ++holes;
+        }
+    }
+    return holes;
+}
+
+// 4-stufiger LossySafe-Matcher: kein 2x2-XOR-Block, kein 3x3-Cluster (>=4 px), inkl. Ueberhang
+bool IsLossySafeMatch(const Glyph& g, const Glyph& p, int ref_dx, int ref_dy,
+                      uint32_t max_diff, uint32_t& out_dist) {
+    const int ox = (ref_dx < 0) ? -ref_dx : 0;
+    const int px_shift = ref_dx + ox;
+    if (static_cast<int>(g.w) + ox > 64 || static_cast<int>(p.w) + px_shift > 64) return false;
+
+    const int y_min = std::min(0, ref_dy);
+    const int y_max = std::max(static_cast<int>(g.h), static_cast<int>(p.h) + ref_dy);
+    uint32_t total = 0;
+    uint64_t prev_h2 = 0;
+    uint64_t r0 = 0, r1 = 0; uint32_t p0 = 0, p1 = 0;
+
+    auto check3x3 = [](uint64_t a, uint64_t b, uint64_t c) -> bool {
+        uint64_t cand = a | b | c;
+        while (cand) {
+            const uint32_t x = static_cast<uint32_t>(std::countr_zero(cand));
+            cand &= cand - 1ULL;
+            const uint64_t m3 = (x == 0) ? 3ULL : ((x >= 63u) ? (3ULL << 62) : (7ULL << (x - 1u)));
+            const uint32_t cnt = static_cast<uint32_t>(
+                std::popcount(a & m3) + std::popcount(b & m3) + std::popcount(c & m3));
+            if (cnt >= 5u) return false;
+        }
+        return true;
+    };
+
+    for (int y = y_min; y < y_max; ++y) {
+        const uint64_t ga = (y >= 0 && y < static_cast<int>(g.h)) ? (g.rows[y] << ox) : 0ULL;
+        const int py = y - ref_dy;
+        const uint64_t ps = (py >= 0 && py < static_cast<int>(p.h)) ? (p.rows[py] << px_shift) : 0ULL;
+        const uint64_t xr = ga ^ ps;
+
+        const uint32_t pc = static_cast<uint32_t>(std::popcount(xr)); total += pc;
+        if (total > max_diff) return false;
+
+        const uint64_t h2 = xr & (xr >> 1);
+        if (h2 & prev_h2) return false;
+        prev_h2 = h2;
+
+        if (p0 + p1 + pc >= 5u && !check3x3(r0, r1, xr)) return false;
+        r0 = r1; r1 = xr; p0 = p1; p1 = pc;
+    }
+    if (p0 + p1 >= 5u && !check3x3(r0, r1, 0ULL)) return false;
+    out_dist = total;
+    return true;
+}
+
 // Run-Length-basiertes 4-Connected-Component-Labeling ohne Vollbild-Label-Array
 void ExtractGlyphsForPage(const Bitmap1bppView& bmp, uint32_t page_idx,
                           std::vector<Run>& runs, std::vector<Glyph>& out) {
@@ -291,7 +411,7 @@ void ExtractGlyphsForPage(const Bitmap1bppView& bmp, uint32_t page_idx,
 
 } // namespace
 
-DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages) {
+DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages, bool lossy_safe) {
     DocumentSymbolPlan plan;
     if (pages.empty()) return plan;
 
@@ -347,9 +467,18 @@ DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages
     auto bidx = [](uint32_t w, uint32_t h) { return h * 65u + w; };
     constexpr std::array<std::pair<int8_t, int8_t>, 4> kExtraShifts = {{{-1,0}, {1,0}, {0,-1}, {0,1}}};
 
+    std::vector<uint8_t> glyph_holes;
+    if (lossy_safe) {
+        glyph_holes.resize(glyphs.size());
+        RunParallel((glyphs.size() + 255u) / 256u, [&](size_t blk) { const size_t s = blk * 256u, e = std::min(glyphs.size(), s + 256u); for (size_t hi = s; hi < e; ++hi) glyph_holes[hi] = (glyphs[hi].w >= 10u && glyphs[hi].h >= 12u) ? CountHoles(glyphs[hi]) : 0u; });
+    }
+
     for (uint32_t i = 0; i < glyphs.size(); ++i) {
         const Glyph& g = glyphs[i];
-        const uint32_t max_diff = std::min<uint32_t>(14u, std::max<uint32_t>(2u, (g.w * g.h) / 16u));
+        const bool small_exact_only = lossy_safe && (g.w < 10u || g.h < 12u);
+        const uint32_t max_diff = small_exact_only ? 0u :
+            (lossy_safe ? std::min<uint32_t>(32u, std::max<uint32_t>(4u, (g.w * g.h) / 12u))
+                        : std::min<uint32_t>(14u, std::max<uint32_t>(2u, (g.w * g.h) / 16u)));
         uint32_t best_gid = 0xFFFFFFFFu;
         uint32_t best_dist = max_diff + 1u;
         int8_t best_rdx = 0, best_rdy = 0;
@@ -362,23 +491,45 @@ DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages
         for (uint32_t bh = h_lo; bh <= h_hi && best_dist > 0; ++bh) {
             for (uint32_t bw = w_lo; bw <= w_hi && best_dist > 0; ++bw) {
                 for (uint32_t gid : buckets[bidx(bw, bh)]) {
-                    const Glyph& p = glyphs[groups[gid].proto_idx];
+                    const uint32_t pidx = groups[gid].proto_idx;
+                    const Glyph& p = glyphs[pidx];
+                    if (small_exact_only && (p.w != g.w || p.h != g.h)) continue;
+                    if (lossy_safe && glyph_holes[i] != glyph_holes[pidx]) continue;
                     const uint32_t cnt_diff = (g.black_cnt > p.black_cnt) ? (g.black_cnt - p.black_cnt) : (p.black_cnt - g.black_cnt);
                     if (cnt_diff >= best_dist) continue;
 
                     const int base_dx = FloorDiv2(static_cast<int32_t>(g.w) - static_cast<int32_t>(p.w));
                     const int base_dy = FloorDiv2(static_cast<int32_t>(g.h) - static_cast<int32_t>(p.h));
-                    const uint32_t d0 = HammingShift(g, p, base_dx, base_dy, std::max(best_dist - 1u, max_diff * 2u));
-                    if (d0 < best_dist) {
-                        best_dist = d0; best_gid = gid; best_rdx = 0; best_rdy = 0;
-                        if (d0 == 0) break;
-                    }
-                    if (d0 <= max_diff * 2u && best_dist > 1u) {
-                        for (auto [sdx, sdy] : kExtraShifts) {
-                            const uint32_t d = HammingShift(g, p, base_dx + sdx, base_dy + sdy, best_dist - 1u);
-                            if (d < best_dist) {
-                                best_dist = d; best_gid = gid; best_rdx = sdx; best_rdy = sdy;
-                                if (d == 0) break;
+                    if (!lossy_safe) {
+                        const uint32_t d0 = HammingShift(g, p, base_dx, base_dy, std::max(best_dist - 1u, max_diff * 2u));
+                        if (d0 < best_dist) {
+                            best_dist = d0; best_gid = gid; best_rdx = 0; best_rdy = 0;
+                            if (d0 == 0) break;
+                        }
+                        if (d0 <= max_diff * 2u && best_dist > 1u) {
+                            for (auto [sdx, sdy] : kExtraShifts) {
+                                const uint32_t d = HammingShift(g, p, base_dx + sdx, base_dy + sdy, best_dist - 1u);
+                                if (d < best_dist) {
+                                    best_dist = d; best_gid = gid; best_rdx = sdx; best_rdy = sdy;
+                                    if (d == 0) break;
+                                }
+                            }
+                        }
+                    } else {
+                        auto fitsPage = [&](int dx, int dy) { const int32_t nx = static_cast<int32_t>(g.x) + dx, ny = static_cast<int32_t>(g.y) + dy; return nx >= 0 && ny >= 0 && nx + static_cast<int32_t>(p.w) <= static_cast<int32_t>(pages[g.page_idx].width) && ny + static_cast<int32_t>(p.h) <= static_cast<int32_t>(pages[g.page_idx].height); }; if (small_exact_only) { if (std::memcmp(g.rows.data(), p.rows.data(), g.h * sizeof(uint64_t)) == 0) { best_dist = 0; best_gid = gid; best_rdx = 0; best_rdy = 0; break; } continue; } uint32_t d0 = 0; if (fitsPage(base_dx, base_dy) && IsLossySafeMatch(g, p, base_dx, base_dy, best_dist - 1u, d0)) {
+                            best_dist = d0; best_gid = gid; best_rdx = 0; best_rdy = 0;
+                            if (d0 == 0) break;
+                        }
+                        if (!small_exact_only && best_dist > 1u) {
+                            const uint32_t coarse = HammingShift(g, p, base_dx, base_dy, max_diff * 2u);
+                            if (coarse <= max_diff * 2u) {
+                                for (auto [sdx, sdy] : kExtraShifts) {
+                                    uint32_t d = 0;
+                                    if (fitsPage(base_dx + sdx, base_dy + sdy) && IsLossySafeMatch(g, p, base_dx + sdx, base_dy + sdy, best_dist - 1u, d)) {
+                                        best_dist = d; best_gid = gid; best_rdx = sdx; best_rdy = sdy;
+                                        if (d == 0) break;
+                                    }
+                                }
                             }
                         }
                     }
@@ -405,7 +556,7 @@ DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages
 
     for (uint32_t gi = 0; gi < groups.size(); ++gi) {
         const auto& grp = groups[gi];
-        if (grp.members.size() >= 3 || (grp.members.size() == 2 && grp.exact_cnt == 2)) {
+        if (grp.members.size() >= 3 || (grp.members.size() == 2 && (lossy_safe || grp.exact_cnt == 2))) {
             cand_groups.push_back(gi);
             for (const Member& m : grp.members) {
                 const uint32_t p = glyphs[m.glyph_idx].page_idx;
@@ -422,7 +573,7 @@ DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages
         if (page_matched[p] < kMinPageInstances) continue;
         if (page_total_glyphs[p] == 0) continue;
         if (page_matched[p] * 100u < page_total_glyphs[p] * kMinPageMatchPct) continue;
-        if (page_refined[p] * 100u > page_matched[p] * kMaxPageRefinedPct) continue;
+        if (!lossy_safe && page_refined[p] * 100u > page_matched[p] * kMaxPageRefinedPct) continue;
         page_active[p] = 1;
         active_page_cnt++;
     }
@@ -538,6 +689,23 @@ DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages
             }
         }
 
+        if (lossy_safe) {
+            for (Instance& inst : insts) {
+                const Glyph& cur = glyphs[inst.glyph_idx];
+                const Glyph& ref = glyphs[dict_proto_indices[inst.sym_id]];
+                const int32_t dx = FloorDiv2(static_cast<int32_t>(cur.w) - static_cast<int32_t>(ref.w)) + inst.rdx;
+                const int32_t dy = FloorDiv2(static_cast<int32_t>(cur.h) - static_cast<int32_t>(ref.h)) + inst.rdy;
+                const int32_t max_x = std::max<int32_t>(0, static_cast<int32_t>(pages[p].width) - static_cast<int32_t>(ref.w));
+                const int32_t max_y = std::max<int32_t>(0, static_cast<int32_t>(pages[p].height) - static_cast<int32_t>(ref.h));
+                const int32_t nx = std::clamp<int32_t>(static_cast<int32_t>(cur.x) + dx, 0, max_x);
+                const int32_t ny = std::clamp<int32_t>(static_cast<int32_t>(cur.y) + dy, 0, max_y);
+                inst.x = static_cast<uint32_t>(nx);
+                inst.y_bot = static_cast<uint32_t>(ny + static_cast<int32_t>(ref.h) - 1);
+                inst.w = ref.w;
+                inst.refined = false;
+            }
+        }
+
         std::sort(insts.begin(), insts.end(), [](const Instance& a, const Instance& b) {
             const uint32_t sa = a.y_bot / kStrips, sb = b.y_bot / kStrips;
             if (sa != sb) return sa < sb;
@@ -552,6 +720,7 @@ DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages
         auto emitInstance = [&](const Instance& inst, int32_t strip_y0) {
             iait.Encode(mq_tr, static_cast<int32_t>(inst.y_bot) - strip_y0);
             iaid.Encode(mq_tr, inst.sym_id);
+            if (lossy_safe) return;
             iari.Encode(mq_tr, inst.refined ? 1 : 0);
             if (inst.refined) {
                 const Glyph& cur = glyphs[inst.glyph_idx];
@@ -600,7 +769,7 @@ DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages
         PushBE32(tp, pages[p].width); PushBE32(tp, pages[p].height);
         PushBE32(tp, 0); PushBE32(tp, 0);
         tp.push_back(0x00);    // CombOp = OR
-        PushBE16(tp, 0x800E);  // SBRTEMPLATE=1, REFCORNER=BOTTOMLEFT(0), LOGSBSTRIPS=3(8), SBREFINE=1
+        PushBE16(tp, lossy_safe ? 0x000C : 0x800E); // SBREFINE=0 (LossySafe) vs. SBREFINE=1+GRRD T1 (Lossless)
         PushBE32(tp, static_cast<uint32_t>(insts.size()));
         tp.insert(tp.end(), tr_bytes.begin(), tr_bytes.end());
     });

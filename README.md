@@ -10,6 +10,7 @@ A standalone, zero-dependency **Windows Imaging Component (WIC)** codec (`jbig2_
 - **Secure Decoder:** Built on vendored PDFium (`core/fxcodec/jbig2`) including FaxG4 (MMR) support and DoS/OOM protection.
 - **Windows Explorer Thumbnails:** Native thumbnail generation for `.jb2` / `.jbig2` and compatibility with classic Windows Photo Viewer.
 - **Fast Lossless MQ Encoder:** Custom ITU-T T.88 Generic Region encoder (Template 0 + TPGDON, 8-pixel byte-chunking) with multi-page support (`IWICBitmapEncoder`).
+- **Optional LossySafe Symbol Mode (`flags=6`):** Opt-in `SBREFINE=0` symbol coding with a 4-stage Xerox-substitution guard (small-glyph exact match, hole topology check, 2x2 XOR block & 3x3 cluster filter) — up to **-51% vs. Generic** on 300-DPI scans with **0** structural 2x2 error blocks.
 - **Zero-Copy C API:** Exported `jbig2_encode_1bpp` and `jbig2_encode_multipage_1bpp` for direct in-memory encoding from Python (`ctypes`) or C/C++.
 - **Single-File DLL:** Statically linked CRT (`/MT`) — no VC++ Redistributable required.
 

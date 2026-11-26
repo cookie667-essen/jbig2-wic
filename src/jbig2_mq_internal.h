@@ -196,6 +196,6 @@ struct DocumentSymbolPlan {
     std::vector<bool> page_has_text;
 };
 
-DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages);
+DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages, bool lossy_safe = false);
 
 } // namespace jbig2::detail

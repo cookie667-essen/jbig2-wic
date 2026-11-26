@@ -16,6 +16,8 @@ int main(int argc, char** argv) {
     if (!info) return 2;
 
     auto bmp = jbig2::DecodePage(data, 0);
+// JBIG2_RAW_DUMP
+if(argc>=3&&bmp){std::ofstream rf(argv[2],std::ios::binary);uint32_t rb=(bmp->width+7u)/8u;for(uint32_t y=0;y<bmp->height;++y)rf.write((const char*)bmp->pixels.data()+size_t(y)*bmp->stride,rb);}
     std::printf("[C] DecodePage(0): ok=%d %ux%u stride=%u\n",
                 (int)bmp.has_value(), bmp ? bmp->width : 0, bmp ? bmp->height : 0, bmp ? bmp->stride : 0);
     std::fflush(stdout);

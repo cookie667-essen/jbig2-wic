@@ -68,3 +68,20 @@ To ensure a fair speed comparison without `libpng` decoding overhead, `jbig2.exe
 - **TPGD (`jbig2.exe -d`):** Yields identical total size (`2,475.9 KB`) in `2,328.5 ms` wall-clock time.
 - **Lossless symbol coding unavailable in `jbig2enc`:** Running `jbig2.exe -s -r` exits immediately with *"Refinement broke in recent releases since it's rarely used"*.
 - **Edge-case crash in `jbig2enc`:** `jbig2.exe` aborts with `rc=3` on `edge_03_1x1_black.png` (both default and `-d`), whereas `jbig2-wic` passes **107/107** files with **0-bit diff**.
+
+---
+
+## v2.4.0: LossySafe Symbol Coding (`flags=6`)
+
+Verified on real 300-DPI scans plus external Leptonica & Tesseract test pages (structural full-page XOR check: **0** 2x2 error blocks on 12/13 documents):
+
+| Document | Generic | Lossless | **LossySafe** | vs. Generic | vs. Lossless | 2x2 Blocks | Time |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **7-Page Scans (Multi-Page)** | 669.5 KB | 646.6 KB | **606.0 KB** | **-9.5%** | **-6.3%** | — | 137.2 ms |
+| `phototest.png` (Tesseract) | 2,871 B | 1,930 B | **1,394 B** | **-51.4%** | **-27.8%** | **0** | 1.3 ms |
+| `Vorlage3_fs.png` | 30,902 B | 23,139 B | **17,998 B** | **-41.8%** | **-22.2%** | **0** | 15.4 ms |
+| `eurotext.png` (Tesseract) | 6,739 B | 6,739 B | **3,958 B** | **-41.3%** | **-41.3%** | **0** | 3.2 ms |
+| `feyn.png` (Leptonica) | 83,713 B | 83,713 B | **49,969 B** | **-40.3%** | **-40.3%** | **0** | 45.6 ms |
+| `EON.png` | 26,506 B | 24,166 B | **17,257 B** | **-34.9%** | **-28.6%** | **0** | 12.8 ms |
+| `feyn-fract.png` (Leptonica) | 9,175 B | 9,175 B | **6,363 B** | **-30.6%** | **-30.6%** | **0** | 4.1 ms |
+| `rabi.png` (Leptonica) | 129,436 B | 129,436 B | **96,542 B** | **-25.4%** | **-25.4%** | **0** | 49.0 ms |

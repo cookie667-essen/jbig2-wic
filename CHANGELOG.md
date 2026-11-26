@@ -4,6 +4,21 @@ All notable changes to **jbig2-wic** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.4.0] - 2026-11-26
+
+### Added
+- **LossySafe Symbol Coding (`flags = 6` / `EncodeOptions::lossy_symbol`):** Optional lossy text-region mode (`SBREFINE = 0`) that eliminates refinement overhead on scanned documents while keeping unmatched glyphs, line graphics, and dithered regions 100% lossless in the residual layer.
+- **4-Stage Xerox-Substitution Guard:**
+  1. *Small-Glyph Guard:* Glyphs smaller than `10x12 px` match only at 0-bit difference (direct `memcmp`).
+  2. *Topology Check:* Parallel 64-bit flood-fill (`CountHoles`) enforces identical enclosed hole counts (prevents `8` vs. `6/9/0` vs. `3/5`).
+  3. *2x2 XOR Block Filter:* Rejects any match producing a solid 2x2 difference block.
+  4. *3x3 Cluster & Boundary Guard:* Rejects 3x3 windows with >= 5 differing pixels (with popcount fast-path) and prevents prototype clamping shifts at page edges.
+- **CI Coverage (`tests/ci_selftest.py`):** Added automated single-page and multi-page `LossySafe` verification including full-page `2x2-Blk == 0` structural diff checks.
+
+### Benchmarks
+- **7 Real-World Scans (Multi-Page):** `669.5 KB` (Generic) -> `646.6 KB` (Lossless) -> **`606.0 KB`** (LossySafe, **-9.5% vs. Generic / -56.4% vs. PNG**) in **137.2 ms**.
+- **External 200-300 DPI Scans (Leptonica & Tesseract):** **-25.4% to -51.4%** vs. Generic (`phototest` -51.4%, `eurotext` -41.3%, `feyn` -40.3%, `feyn-fract` -30.6%, `rabi` -25.4%) with **0** 2x2 error blocks.
+
 ## [v2.3.0] - 2026-11-25
 
 ### Performance

@@ -4,6 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DLL = ROOT / "build" / "Release" / "jbig2_wic.dll"
 TEST_EXE = ROOT / "build" / "Release" / "encoder_test.exe"
+CORE_EXE = ROOT / "build" / "Release" / "core_test.exe"
 
 class Page(ctypes.Structure):
     _fields_ = [
@@ -127,6 +128,35 @@ def main() -> int:
     assert len(msym) < len(mgen), f"Multi-Page Symbol ({len(msym)} B) nicht kleiner als Generic ({len(mgen)} B)"
     compare_check(mgen, msym, "Multi-Page Global-Dict vs Generic")
     print(f"[OK] Multi-Page (3 Seiten): Generic={len(mgen)} B | Symbol={len(msym)} B ({(len(msym)-len(mgen))/len(mgen)*100:+.1f}%) | Global-Dict OK | 0 Bit (alle 3 Seiten)")
+
+    ls1 = encode([pg0], 6)
+    assert len(ls1) < len(sym1), f'LossySafe ({len(ls1)} B) nicht kleiner als Lossless ({len(sym1)} B)'
+    with tempfile.TemporaryDirectory() as td:
+        pj, pr = Path(td) / 'ls1.jb2', Path(td) / 'ls1.raw'
+        pj.write_bytes(ls1)
+        r = subprocess.run([str(CORE_EXE), str(pj), str(pr)], capture_output=True, text=True)
+        assert r.returncode == 0, f'LossySafe Single-Page core_test rc={r.returncode}'
+        aa, bb = bytes(raw0), pr.read_bytes()
+        w, h, st = pg0.width, pg0.height, pg0.stride
+        rm = ((1 << w) - 1) << (st * 8 - w)
+        xs = [(int.from_bytes(aa[y*st:(y+1)*st], 'big') ^ int.from_bytes(bb[y*st:(y+1)*st], 'big')) & rm for y in range(h)]
+        h2 = [x & (x >> 1) for x in xs]
+        dpx = sum(x.bit_count() for x in xs)
+        b2 = sum((h2[y] & h2[y-1]).bit_count() for y in range(1, h))
+        assert b2 == 0, f'LossySafe 2x2-Fehlerbloecke gefunden: {b2}'
+    print(f'[OK] Single-Page LossySafe: {len(ls1)} B ({(len(ls1)-len(gen1))/len(gen1)*100:+.1f}% vs Gen, {(len(ls1)-len(sym1))/len(sym1)*100:+.1f}% vs LL) | Diff={dpx} px | 2x2-Blk=0')
+
+    mls = encode(pgs, 6)
+    lsegs = parse_segments(mls)
+    assert any(t == 0 and p == 0 for t, p, _ in lsegs), f'LossySafe: Kein globales Segment 0: {lsegs}'
+    assert {p for t, p, _ in lsegs if t == 7} == {1, 2, 3}, 'LossySafe: Text-Regionen fehlen'
+    assert len(mls) < len(msym), f'Multi-Page LossySafe ({len(mls)} B) nicht kleiner als Lossless ({len(msym)} B)'
+    with tempfile.TemporaryDirectory() as td:
+        pj = Path(td) / 'mls.jb2'
+        pj.write_bytes(mls)
+        r = subprocess.run([str(CORE_EXE), str(pj)], capture_output=True, text=True)
+        assert r.returncode == 0, f'LossySafe Multi-Page core_test rc={r.returncode}'
+    print(f'[OK] Multi-Page LossySafe (3 Seiten): {len(mls)} B ({(len(mls)-len(mgen))/len(mgen)*100:+.1f}% vs Gen, {(len(mls)-len(msym))/len(msym)*100:+.1f}% vs LL) | Global-Dict OK')
     return 0
 
 if __name__ == "__main__":
