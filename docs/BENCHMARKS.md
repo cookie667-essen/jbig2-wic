@@ -85,3 +85,15 @@ Verified on real 300-DPI scans plus external Leptonica & Tesseract test pages (s
 | `EON.png` | 26,506 B | 24,166 B | **17,257 B** | **-34.9%** | **-28.6%** | **0** | 12.8 ms |
 | `feyn-fract.png` (Leptonica) | 9,175 B | 9,175 B | **6,363 B** | **-30.6%** | **-30.6%** | **0** | 4.1 ms |
 | `rabi.png` (Leptonica) | 129,436 B | 129,436 B | **96,542 B** | **-25.4%** | **-25.4%** | **0** | 49.0 ms |
+
+## PDF Stream Export & Halftone Region (v2.5.0)
+
+### PDF-Embedded Export (`/JBIG2Globals`, Zero-Copy)
+- **7-Page Scan Set (300 DPI):** ~100–120 ms total encoding time with separated `/JBIG2Globals` dictionary.
+- **Verification:** 0-bit diff in lossless mode; direct PDF rendering verified in Chrome/Edge.
+
+### Halftone Region (`flags=8`, Segments 16 & 23)
+| Test Image | Generic | Halftone (`flags=8`) | vs. Generic | Time | Diff |
+|---|---:|---:|---:|---:|---|
+| `synth_cell_4x4.png` (512x512) | 1,205 B | **217 B** | **-82.0%** | 2.2 ms | 0-bit |
+| `kodim11..15_bayer4.png` (Pixel-Bayer) | 17–46 KB | Auto-Fallback | +0.0% | 7.0–9.8 ms | 0-bit |

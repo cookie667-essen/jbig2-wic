@@ -199,45 +199,42 @@ void WritePageInfo(std::vector<uint8_t>& file, uint32_t& seg, uint32_t page, con
 
 } // namespace
 
-std::vector<uint8_t> EncodeLosslessDocumentView(std::span<const Bitmap1bppView> pages, LosslessEncodeOptions opts) {
-    if (pages.empty()) return {};
+namespace {
+struct PreparedDocument {
+    std::vector<std::vector<uint8_t>> gen_payloads;
+    std::vector<std::vector<uint8_t>> res_payloads;
+    std::vector<uint8_t> use_sym;
+    std::vector<uint8_t> use_ht;
+    std::vector<detail::PageHalftonePlan> ht_plans;
+    detail::DocumentSymbolPlan plan;
+    bool emit_global_dict = false;
+    bool ok = false;
+};
+PreparedDocument PrepareDocument(std::span<const Bitmap1bppView> pages, LosslessEncodeOptions opts) {
+    PreparedDocument out;
+    if (pages.empty()) return out;
     for (const auto& p : pages) {
-        if (!p.pixels || p.width == 0 || p.height == 0 || p.stride < (p.width + 7) / 8 ||
-            p.pixel_bytes < static_cast<size_t>(p.stride) * p.height) return {};
+        if (!p.pixels || p.width == 0 || p.height == 0 || p.stride < (p.width + 7) / 8 || p.pixel_bytes < static_cast<size_t>(p.stride) * p.height) return out;
     }
-
-    std::vector<uint8_t> file = { 0x97, 0x4A, 0x42, 0x32, 0x0D, 0x0A, 0x1A, 0x0A, 0x01 };
-    PushBE32(file, static_cast<uint32_t>(pages.size()));
-    uint32_t seg = 0;
-
+    out.gen_payloads.resize(pages.size());
+    out.use_sym.assign(pages.size(), 0);
+    out.use_ht.assign(pages.size(), 0);
+    if (opts.halftone_coding) out.ht_plans.resize(pages.size());
     if (!opts.symbol_coding && !opts.lossy_symbol) {
-        std::vector<std::vector<uint8_t>> gen_payloads(pages.size());
-        RunParallelWithCtx(pages.size(), [&](size_t i, uint8_t* ctx) {
-            gen_payloads[i] = EncodeGenericRegionPayload(pages[i], opts.adaptive_templates, ctx);
-        });
-        for (size_t i = 0; i < pages.size(); ++i) {
-            const uint32_t page = static_cast<uint32_t>(i + 1);
-            WritePageInfo(file, seg, page, pages[i]);
-            WriteSegHdr(file, seg++, 39, page, static_cast<uint32_t>(gen_payloads[i].size()));
-            file.insert(file.end(), gen_payloads[i].begin(), gen_payloads[i].end());
-            WriteSegHdr(file, seg++, 49, page, 0);
+        RunParallelWithCtx(pages.size(), [&](size_t i, uint8_t* ctx) { out.gen_payloads[i] = EncodeGenericRegionPayload(pages[i], opts.adaptive_templates, ctx); });
+        if (opts.halftone_coding) {
+            for (size_t i = 0; i < pages.size(); ++i) {
+                out.ht_plans[i] = detail::BuildPageHalftonePlan(pages[i]);
+                if (out.ht_plans[i].valid && out.ht_plans[i].dict_payload.size() + out.ht_plans[i].region_payload.size() + 24u < out.gen_payloads[i].size()) out.use_ht[i] = 1;
+            }
         }
-        WriteSegHdr(file, seg++, 51, 0, 0);
-        return file;
+        out.ok = true; return out;
     }
-
-    // Symbol-Coding mit Multi-Page Global-Dict & parallelem Generic-/Residual-Encoding
-    std::vector<std::vector<uint8_t>> gen_payloads(pages.size());
-    std::vector<std::vector<uint8_t>> res_payloads(pages.size());
-    std::vector<uint8_t> use_sym(pages.size(), 0);
-
-    // Generic-Encoding parallel zu BuildDocumentSymbolPlan ueberlappen (mit Thread-Budget)
+    out.res_payloads.resize(pages.size());
     std::jthread gen_worker([&]() {
         if (pages.size() <= 1) {
-            if (!pages.empty()) {
-                std::vector<uint8_t> ctx(65536, 0);
-                gen_payloads[0] = EncodeGenericRegionPayload(pages[0], opts.adaptive_templates, ctx.data());
-            }
+            std::vector<uint8_t> ctx(65536, 0);
+            out.gen_payloads[0] = EncodeGenericRegionPayload(pages[0], opts.adaptive_templates, ctx.data());
             return;
         }
         const unsigned hw = std::thread::hardware_concurrency();
@@ -248,77 +245,117 @@ std::vector<uint8_t> EncodeLosslessDocumentView(std::span<const Bitmap1bppView> 
             for (;;) {
                 const size_t i = next_gen.fetch_add(1, std::memory_order_relaxed);
                 if (i >= pages.size()) break;
-                gen_payloads[i] = EncodeGenericRegionPayload(pages[i], opts.adaptive_templates, ctx.data());
+                out.gen_payloads[i] = EncodeGenericRegionPayload(pages[i], opts.adaptive_templates, ctx.data());
             }
         };
-        std::vector<std::jthread> pool;
-        pool.reserve(gen_threads > 1 ? gen_threads - 1 : 0);
+        std::vector<std::jthread> pool; pool.reserve(gen_threads > 1 ? gen_threads - 1 : 0);
         for (size_t t = 1; t < gen_threads; ++t) pool.emplace_back(worker);
         worker();
     });
-
-    auto plan = detail::BuildDocumentSymbolPlan(pages, opts.lossy_symbol);
+    out.plan = detail::BuildDocumentSymbolPlan(pages, opts.lossy_symbol);
     gen_worker.join();
-
-    // Nur aktive Text-Seiten benoetigen noch Residual-Encoding (danach Residual-RAM direkt freigeben)
     std::vector<size_t> res_pages;
-    if (plan.valid) {
-        res_pages.reserve(pages.size());
-        for (size_t i = 0; i < pages.size(); ++i) {
-            if (plan.page_has_text[i]) res_pages.push_back(i);
-        }
-    }
+    if (out.plan.valid) { res_pages.reserve(pages.size()); for (size_t i = 0; i < pages.size(); ++i) if (out.plan.page_has_text[i]) res_pages.push_back(i); }
     if (!res_pages.empty()) {
         RunParallelWithCtx(res_pages.size(), [&](size_t r_idx, uint8_t* ctx) {
             const size_t i = res_pages[r_idx];
-            Bitmap1bppView res_view = pages[i];
-            res_view.pixels = plan.residuals[i].data();
-            res_view.pixel_bytes = plan.residuals[i].size();
-            res_payloads[i] = EncodeGenericRegionPayload(res_view, opts.adaptive_templates, ctx);
-            plan.residuals[i].clear();
-            plan.residuals[i].shrink_to_fit();
+            Bitmap1bppView rv = pages[i]; rv.pixels = out.plan.residuals[i].data(); rv.pixel_bytes = out.plan.residuals[i].size();
+            out.res_payloads[i] = EncodeGenericRegionPayload(rv, opts.adaptive_templates, ctx);
+            out.plan.residuals[i].clear(); out.plan.residuals[i].shrink_to_fit();
         });
     }
-
     int64_t total_saved = 0;
     for (size_t i = 0; i < pages.size(); ++i) {
-        if (plan.valid && plan.page_has_text[i]) {
-            const size_t gen_size = gen_payloads[i].size();
-            const size_t sym_page_cost = plan.text_payloads[i].size() + 12u + res_payloads[i].size();
-            const size_t min_page_saving = gen_size / 100u;
-            if (sym_page_cost + min_page_saving < gen_size) {
-                use_sym[i] = 1;
-                total_saved += static_cast<int64_t>(gen_size - sym_page_cost);
-            }
+        if (out.plan.valid && out.plan.page_has_text[i]) {
+            const size_t gs = out.gen_payloads[i].size();
+            const size_t sc = out.plan.text_payloads[i].size() + 12u + out.res_payloads[i].size();
+            if (sc + (gs / 100u) < gs) { out.use_sym[i] = 1; total_saved += static_cast<int64_t>(gs - sc); }
         }
     }
-
-    const int64_t dict_cost = static_cast<int64_t>(plan.dict_payload.size() + 12u);
-    const bool emit_global_dict = plan.valid && total_saved > dict_cost;
-    uint32_t sd_seg = 0;
-    if (emit_global_dict) {
-        sd_seg = seg++;
-        WriteSegHdr(file, sd_seg, 0, 0, static_cast<uint32_t>(plan.dict_payload.size()));
-        file.insert(file.end(), plan.dict_payload.begin(), plan.dict_payload.end());
+    out.emit_global_dict = out.plan.valid && total_saved > static_cast<int64_t>(out.plan.dict_payload.size() + 12u);
+    if (opts.halftone_coding) {
+        for (size_t i = 0; i < pages.size(); ++i) {
+            if (out.emit_global_dict && out.use_sym[i]) continue;
+            out.ht_plans[i] = detail::BuildPageHalftonePlan(pages[i]);
+            if (out.ht_plans[i].valid && out.ht_plans[i].dict_payload.size() + out.ht_plans[i].region_payload.size() + 24u < out.gen_payloads[i].size()) out.use_ht[i] = 1;
+        }
     }
+    out.ok = true; return out;
+}
+} // namespace
 
+std::vector<uint8_t> EncodeLosslessDocumentView(std::span<const Bitmap1bppView> pages, LosslessEncodeOptions opts) {
+    auto prep = PrepareDocument(pages, opts);
+    if (!prep.ok) return {};
+    std::vector<uint8_t> file = { 0x97, 0x4A, 0x42, 0x32, 0x0D, 0x0A, 0x1A, 0x0A, 0x01 };
+    PushBE32(file, static_cast<uint32_t>(pages.size()));
+    uint32_t seg = 0, sd_seg = 0;
+    if (prep.emit_global_dict) {
+        sd_seg = seg++;
+        WriteSegHdr(file, sd_seg, 0, 0, static_cast<uint32_t>(prep.plan.dict_payload.size()));
+        file.insert(file.end(), prep.plan.dict_payload.begin(), prep.plan.dict_payload.end());
+    }
     for (size_t i = 0; i < pages.size(); ++i) {
         const uint32_t page = static_cast<uint32_t>(i + 1);
         WritePageInfo(file, seg, page, pages[i]);
-        if (emit_global_dict && use_sym[i]) {
-            WriteSegHdrRef1(file, seg++, 7, sd_seg, page, static_cast<uint32_t>(plan.text_payloads[i].size()));
-            file.insert(file.end(), plan.text_payloads[i].begin(), plan.text_payloads[i].end());
-            WriteSegHdr(file, seg++, 39, page, static_cast<uint32_t>(res_payloads[i].size()));
-            file.insert(file.end(), res_payloads[i].begin(), res_payloads[i].end());
+        if (prep.emit_global_dict && prep.use_sym[i]) {
+            WriteSegHdrRef1(file, seg++, 7, sd_seg, page, static_cast<uint32_t>(prep.plan.text_payloads[i].size()));
+            file.insert(file.end(), prep.plan.text_payloads[i].begin(), prep.plan.text_payloads[i].end());
+            WriteSegHdr(file, seg++, 39, page, static_cast<uint32_t>(prep.res_payloads[i].size()));
+            file.insert(file.end(), prep.res_payloads[i].begin(), prep.res_payloads[i].end());
+        } else if (prep.use_ht[i]) {
+            const uint32_t pdd_seg = seg++;
+            WriteSegHdr(file, pdd_seg, 16, page, static_cast<uint32_t>(prep.ht_plans[i].dict_payload.size()));
+            file.insert(file.end(), prep.ht_plans[i].dict_payload.begin(), prep.ht_plans[i].dict_payload.end());
+            WriteSegHdrRef1(file, seg++, 23, pdd_seg, page, static_cast<uint32_t>(prep.ht_plans[i].region_payload.size()));
+            file.insert(file.end(), prep.ht_plans[i].region_payload.begin(), prep.ht_plans[i].region_payload.end());
         } else {
-            WriteSegHdr(file, seg++, 39, page, static_cast<uint32_t>(gen_payloads[i].size()));
-            file.insert(file.end(), gen_payloads[i].begin(), gen_payloads[i].end());
+            WriteSegHdr(file, seg++, 39, page, static_cast<uint32_t>(prep.gen_payloads[i].size()));
+            file.insert(file.end(), prep.gen_payloads[i].begin(), prep.gen_payloads[i].end());
         }
         WriteSegHdr(file, seg++, 49, page, 0);
     }
-
     WriteSegHdr(file, seg++, 51, 0, 0);
     return file;
+}
+
+PdfEncodedDocument EncodePdfDocumentView(std::span<const Bitmap1bppView> pages, LosslessEncodeOptions opts) {
+    PdfEncodedDocument pdf;
+    auto prep = PrepareDocument(pages, opts);
+    if (!prep.ok) return pdf;
+    if (prep.emit_global_dict) {
+        WriteSegHdr(pdf.globals, 0, 0, 0, static_cast<uint32_t>(prep.plan.dict_payload.size()));
+        pdf.globals.insert(pdf.globals.end(), prep.plan.dict_payload.begin(), prep.plan.dict_payload.end());
+    }
+    pdf.pages.resize(pages.size());
+    for (size_t i = 0; i < pages.size(); ++i) {
+        auto& ps = pdf.pages[i];
+        uint32_t seg = 1;
+        WritePageInfo(ps, seg, 1, pages[i]);
+        if (prep.emit_global_dict && prep.use_sym[i]) {
+            WriteSegHdrRef1(ps, seg++, 7, 0, 1, static_cast<uint32_t>(prep.plan.text_payloads[i].size()));
+            ps.insert(ps.end(), prep.plan.text_payloads[i].begin(), prep.plan.text_payloads[i].end());
+            WriteSegHdr(ps, seg++, 39, 1, static_cast<uint32_t>(prep.res_payloads[i].size()));
+            ps.insert(ps.end(), prep.res_payloads[i].begin(), prep.res_payloads[i].end());
+        } else if (prep.use_ht[i]) {
+            const uint32_t pdd_seg = seg++;
+            WriteSegHdr(ps, pdd_seg, 16, 1, static_cast<uint32_t>(prep.ht_plans[i].dict_payload.size()));
+            ps.insert(ps.end(), prep.ht_plans[i].dict_payload.begin(), prep.ht_plans[i].dict_payload.end());
+            WriteSegHdrRef1(ps, seg++, 23, pdd_seg, 1, static_cast<uint32_t>(prep.ht_plans[i].region_payload.size()));
+            ps.insert(ps.end(), prep.ht_plans[i].region_payload.begin(), prep.ht_plans[i].region_payload.end());
+        } else {
+            WriteSegHdr(ps, seg++, 39, 1, static_cast<uint32_t>(prep.gen_payloads[i].size()));
+            ps.insert(ps.end(), prep.gen_payloads[i].begin(), prep.gen_payloads[i].end());
+        }
+        WriteSegHdr(ps, seg++, 49, 1, 0);
+    }
+    return pdf;
+}
+
+PdfEncodedDocument EncodePdfDocument(std::span<const Bitmap1bpp> pages, LosslessEncodeOptions opts) {
+    std::vector<Bitmap1bppView> views; views.reserve(pages.size());
+    for (const auto& p : pages) views.push_back({ p.pixels.data(), p.pixels.size(), p.width, p.height, p.stride, p.dpi_x, p.dpi_y });
+    return EncodePdfDocumentView(views, opts);
 }
 std::vector<uint8_t> EncodeLosslessDocument(std::span<const Bitmap1bpp> pages, LosslessEncodeOptions opts) {
     std::vector<Bitmap1bppView> views; views.reserve(pages.size());

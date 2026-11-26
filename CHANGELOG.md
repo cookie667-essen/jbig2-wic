@@ -4,6 +4,12 @@ All notable changes to **jbig2-wic** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-11-26
+
+### Added
+- **PDF-Embedded Stream Export (`jbig2_encode_pdf_1bpp`)**: ISO 32000-1 §7.4.7-konforme Ausgabe mit getrenntem `/JBIG2Globals`-Stream und seitenweisen Streams ohne File-Header/EOF, inkl. Zero-Copy-Pipeline (`Bitmap1bppView`).
+- **Lossless Halftone Region Encoder (`flags=8`, Segmente 16 & 23)**: 4×4 Pattern Dictionary + Popcount-sortierte Gray-Code-Bitebenen mit L1-Bitset, Nibble-Fast-Path und automatischem Generic-Fallback bei > 64 Mustern (−82 % auf 4×4-Zellenrastern bei 0 Bit Abweichung).
+
 ## [v2.4.0] - 2026-11-26
 
 ### Added

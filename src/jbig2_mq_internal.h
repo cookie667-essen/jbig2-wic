@@ -198,4 +198,12 @@ struct DocumentSymbolPlan {
 
 DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages, bool lossy_safe = false);
 
+
+struct PageHalftonePlan {
+    bool valid = false;
+    std::vector<uint8_t> dict_payload;
+    std::vector<uint8_t> region_payload;
+};
+PageHalftonePlan BuildPageHalftonePlan(const Bitmap1bppView& page);
+
 } // namespace jbig2::detail

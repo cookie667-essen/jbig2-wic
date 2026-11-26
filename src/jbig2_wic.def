@@ -7,3 +7,5 @@ EXPORTS
     jbig2_encode_1bpp
     jbig2_free_buffer
     jbig2_encode_multipage_1bpp
+    jbig2_encode_pdf_1bpp
+    jbig2_free_pdf_output

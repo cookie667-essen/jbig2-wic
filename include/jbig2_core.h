@@ -45,11 +45,21 @@ struct LosslessEncodeOptions {
     uint8_t template_id = 0;
     bool adaptive_templates = false; // Stufe B: Auto-AT-Optimierung fuer Dither/Raster
     bool symbol_coding = false; // Lossless Symbol Dictionary + Text Region
-    bool lossy_symbol = false;  // Opt-in: Safe Lossy Symbol Coding (SBREFINE=0 + 4-stage Xerox guard)
+    bool lossy_symbol = false;
+    bool halftone_coding = false; // Lossless 4x4 Halftone Region (Seg 16 + 23)  // Opt-in: Safe Lossy Symbol Coding (SBREFINE=0 + 4-stage Xerox guard)
 };
 
 std::vector<uint8_t> EncodeLosslessPage(const Bitmap1bpp& bitmap, LosslessEncodeOptions opts = {});
 std::vector<uint8_t> EncodeLosslessDocumentView(std::span<const Bitmap1bppView> pages, LosslessEncodeOptions opts = {});
 std::vector<uint8_t> EncodeLosslessDocument(std::span<const Bitmap1bpp> pages, LosslessEncodeOptions opts = {});
+
+
+struct PdfEncodedDocument {
+    std::vector<uint8_t> globals;
+    std::vector<std::vector<uint8_t>> pages;
+};
+
+PdfEncodedDocument EncodePdfDocumentView(std::span<const Bitmap1bppView> pages, LosslessEncodeOptions opts = {});
+PdfEncodedDocument EncodePdfDocument(std::span<const Bitmap1bpp> pages, LosslessEncodeOptions opts = {});
 
 } // namespace jbig2

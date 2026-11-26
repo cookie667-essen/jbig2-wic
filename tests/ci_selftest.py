@@ -157,7 +157,78 @@ def main() -> int:
         r = subprocess.run([str(CORE_EXE), str(pj)], capture_output=True, text=True)
         assert r.returncode == 0, f'LossySafe Multi-Page core_test rc={r.returncode}'
     print(f'[OK] Multi-Page LossySafe (3 Seiten): {len(mls)} B ({(len(mls)-len(mgen))/len(mgen)*100:+.1f}% vs Gen, {(len(mls)-len(msym))/len(msym)*100:+.1f}% vs LL) | Global-Dict OK')
+
+    class PdfOut(ctypes.Structure):
+        _fields_ = [('gb', ctypes.c_void_p), ('gs', ctypes.c_size_t), ('n', ctypes.c_uint32), ('pb', ctypes.POINTER(ctypes.c_void_p)), ('ps', ctypes.POINTER(ctypes.c_size_t))]
+    lib.jbig2_encode_pdf_1bpp.argtypes = [ctypes.POINTER(Page), ctypes.c_uint32, ctypes.c_int, ctypes.POINTER(PdfOut)]
+    lib.jbig2_free_pdf_output.argtypes = [ctypes.POINTER(PdfOut)]
+    arr3 = (Page * len(pgs))(*pgs)
+    po = PdfOut()
+    assert lib.jbig2_encode_pdf_1bpp(arr3, len(pgs), 2, ctypes.byref(po)) == 0
+    gbytes = ctypes.string_at(po.gb, po.gs) if po.gs else b''
+    pbytes = [ctypes.string_at(po.pb[i], po.ps[i]) for i in range(po.n)]
+    lib.jbig2_free_pdf_output(ctypes.byref(po))
+    assert len(gbytes) > 0 and len(pbytes) == 3, 'PDF Lossless: Globals/Pages ungueltig'
+    hdr = bytes([0x97, 0x4A, 0x42, 0x32, 0x0D, 0x0A, 0x1A, 0x0A, 0x01, 0, 0, 0, 1])
+    eof = bytes([0, 0, 0, 99, 51, 0, 0, 0, 0, 0, 0])
+    for i in range(3):
+        compare_check(encode([pgs[i]], 0), hdr + gbytes + pbytes[i] + eof, f'PDF Page {i+1}')
+    po6 = PdfOut()
+    assert lib.jbig2_encode_pdf_1bpp(arr3, len(pgs), 6, ctypes.byref(po6)) == 0
+    p6_tot = po6.gs + sum(po6.ps[i] for i in range(po6.n))
+    lib.jbig2_free_pdf_output(ctypes.byref(po6))
+    assert p6_tot < len(gbytes) + sum(len(x) for x in pbytes), 'PDF LossySafe nicht kleiner als Lossless'
+    print(f'[OK] PDF-Export (3 Seiten): Globals={len(gbytes)} B | LL={len(gbytes)+sum(len(x) for x in pbytes)} B (0 Bit) | LS={p6_tot} B')
     return 0
 
 if __name__ == "__main__":
     sys.exit(main())
+
+def _test_halftone() -> None:
+    import ctypes, subprocess, tempfile
+    from pathlib import Path
+    from PIL import Image
+
+    lib = ctypes.WinDLL(str(Path("build/Release/jbig2_wic.dll").resolve()))
+    class _Page(ctypes.Structure):
+        _fields_ = [("p", ctypes.c_void_p), ("w", ctypes.c_uint32), ("h", ctypes.c_uint32),
+                    ("s", ctypes.c_uint32), ("dx", ctypes.c_double), ("dy", ctypes.c_double)]
+    fn = lib.jbig2_encode_multipage_1bpp
+    fn.argtypes = [ctypes.POINTER(_Page), ctypes.c_uint32, ctypes.c_int,
+                   ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)), ctypes.POINTER(ctypes.c_size_t)]
+    lib.jbig2_free_buffer.argtypes = [ctypes.c_void_p]
+
+    bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]
+    im = Image.new("1", (256, 256), 1)
+    px = im.load()
+    for gy in range(0, 256, 4):
+        for gx in range(0, 256, 4):
+            lvl = int(((gx + gy) / 512) * 16)
+            for dy in range(4):
+                for dx in range(4):
+                    px[gx + dx, gy + dy] = 0 if bayer[dy * 4 + dx] < lvl else 1
+
+    raw = im.tobytes()
+    buf = ctypes.create_string_buffer(raw, len(raw))
+    pg = _Page(ctypes.cast(buf, ctypes.c_void_p), 256, 256, 32, 300.0, 300.0)
+
+    def _enc(flags: int) -> bytes:
+        ptr, sz = ctypes.POINTER(ctypes.c_uint8)(), ctypes.c_size_t(0)
+        assert fn(ctypes.byref(pg), 1, flags, ctypes.byref(ptr), ctypes.byref(sz)) == 0
+        out = ctypes.string_at(ptr, sz.value)
+        lib.jbig2_free_buffer(ptr)
+        return out
+
+    gb, hb = _enc(0), _enc(8)
+    assert len(hb) < len(gb) * 0.5, f"Halftone zu gross: {len(hb)} vs {len(gb)}"
+    with tempfile.TemporaryDirectory() as td:
+        fg, fh = Path(td) / "g.jb2", Path(td) / "h.jb2"
+        fg.write_bytes(gb)
+        fh.write_bytes(hb)
+        r = subprocess.run(["build/Release/encoder_test.exe", "--compare", str(fg), str(fh)],
+                           capture_output=True, text=True, check=True)
+        assert "0 Bit" in r.stdout, r.stdout
+    print(f"[OK] Halftone (4x4): Generic={len(gb)} B | Halftone={len(hb)} B "
+          f"({(len(hb)-len(gb))/len(gb)*100:+.1f}%) | 0 Bit")
+
+_test_halftone()
