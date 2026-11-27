@@ -1,10 +1,10 @@
-# JBIG2-WIC
+# jbig2-tools
 
 > [!NOTE]
-> [![Latest Release](https://img.shields.io/github/v/release/cookie667-essen/jbig2-wic?label=Latest%20Release)](https://github.com/cookie667-essen/jbig2-wic/releases/latest) — Zero-copy PDF `/JBIG2Globals` stream export, lossless 4x4 Halftone Region coding (`flags=8`), optional `LossySafe` symbol coding (4-stage Xerox guard) & 0-bit lossless GRRD T1 symbol coding.
+> [![Latest Release](https://img.shields.io/github/v/release/cookie667-essen/jbig2-tools?label=Latest%20Release)](https://github.com/cookie667-essen/jbig2-tools/releases/latest) — Zero-copy PDF `/JBIG2Globals` stream export, lossless 4x4 Halftone Region coding (`flags=8`), optional `LossySafe` symbol coding (4-stage Xerox guard) & 0-bit lossless GRRD T1 symbol coding.
 
 
-A standalone, zero-dependency **Windows Imaging Component (WIC)** codec (`jbig2_wic.dll`) for `.jb2` and `.jbig2` files on Windows 10/11.
+A fast, zero-dependency, cross-platform **JBIG2 (ITU-T T.88)** toolkit for **Windows x64** (`jbig2_wic.dll` WIC codec) and **Linux x64** (`libjbig2.so`, `jbig2-cli`, Freedesktop thumbnailer).
 
 ## Features
 - **Secure Decoder:** Built on vendored PDFium (`core/fxcodec/jbig2`) including FaxG4 (MMR) support and DoS/OOM protection.
@@ -13,7 +13,9 @@ A standalone, zero-dependency **Windows Imaging Component (WIC)** codec (`jbig2_
 - **Optional LossySafe Symbol Mode (`flags=6`):** Opt-in `SBREFINE=0` symbol coding with a 4-stage Xerox-substitution guard (small-glyph exact match, hole topology check, 2x2 XOR block & 3x3 cluster filter) — up to **-51% vs. Generic** on 300-DPI scans with **0** structural 2x2 error blocks.
 - **Lossless Halftone Region Mode (`flags=8`):** ITU-T T.88 Segments 16 & 23 (4x4 pattern dictionary + Popcount-sorted Gray-code bitplanes) with L1-bitset extraction and automatic Generic fallback (> 64 patterns) — up to **-82.0% vs. Generic** on periodic 4x4 cell halftones with **0-bit diff**.
 - **Zero-Copy C API & PDF Stream Export:** Exported `jbig2_encode_1bpp`, `jbig2_encode_multipage_1bpp`, and `jbig2_encode_pdf_1bpp` (ISO 32000-1 §7.4.7 `/JBIG2Globals` + per-page streams without file header/EOF) for direct in-memory encoding from Python (`ctypes`) or C/C++.
-- **Single-File DLL:** Statically linked CRT (`/MT`) — no VC++ Redistributable required.
+- **Zero-Dependency CLI (`jbig2-cli`):** Cross-platform command-line tool (`info`, `decode` to PBM/PNG, `thumb`, `encode` to multi-page `.jb2` or `/JBIG2Globals` `.pdf`).
+- **Linux Shared Library & Thumbnails:** Native `libjbig2.so` (`ctypes`/C API) plus Freedesktop `.thumbnailer` & MIME integration for Nautilus, Thunar, Nemo, and Caja.
+- **Single-File Windows DLL:** Statically linked CRT (`/MT`) — no VC++ Redistributable required.
 
 ## Benchmarks (v2.5.0)
 
@@ -34,10 +36,26 @@ Run PowerShell **as Administrator**:
 .\scripts\install.ps1
 ```
 
+## Installation (Linux x64)
+From a release tarball or after building:
+```bash
+sudo ./install-linux.sh          # system-wide (/usr/local)
+# or user-local (~/.local):
+./install-linux.sh --user
+```
+
 ## Build from Source
+**Windows (MSVC):**
 ```powershell
 cmake -B build -A x64
 cmake --build build --config Release
+```
+
+**Linux (GCC / Ninja):**
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+JBIG2_BUILD_DIR=build python3 tests/ci_selftest.py
 ```
 
 ## Documentation

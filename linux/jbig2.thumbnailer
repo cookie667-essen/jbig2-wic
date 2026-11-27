@@ -1,0 +1,4 @@
+[Thumbnailer Entry]
+TryExec=jbig2-cli
+Exec=jbig2-cli thumb %i %o %s
+MimeType=image/x-jbig2;image/jbig2;

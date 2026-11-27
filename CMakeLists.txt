@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
-project(jbig2_wic LANGUAGES CXX)
+project(jbig2_tools LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -29,13 +29,18 @@ target_include_directories(jbig2_core
     PRIVATE "${CMAKE_SOURCE_DIR}/third_party/pdfium_shim"
             "${CMAKE_SOURCE_DIR}/third_party/pdfium"
 )
+set_target_properties(jbig2_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 if(MSVC)
     set_source_files_properties(${PDFIUM_JBIG2_SOURCES} ${PDFIUM_FAX_SOURCES} PROPERTIES COMPILE_OPTIONS "/W0")
+else()
+    set_source_files_properties(${PDFIUM_JBIG2_SOURCES} ${PDFIUM_FAX_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
 endif()
 
 if(WIN32)
     add_library(jbig2_wic SHARED
         src/dll_main.cpp
+        src/jbig2_c_api.cpp
         src/wic_decoder.cpp
         src/wic_encoder.cpp
         src/wic_registry.cpp
@@ -50,14 +55,23 @@ if(WIN32)
     target_link_libraries(wic_smoke_test PRIVATE windowscodecs.lib ole32.lib)
     target_compile_definitions(wic_smoke_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 
-    add_executable(core_test tests/core_test.cpp)
-    target_link_libraries(core_test PRIVATE jbig2_core)
 
-    add_executable(encoder_test tests/encoder_test.cpp)
-    target_link_libraries(encoder_test PRIVATE jbig2_core)
 
     add_executable(wic_roundtrip_test tests/wic_roundtrip_test.cpp)
     target_include_directories(wic_roundtrip_test PRIVATE "${CMAKE_SOURCE_DIR}/include")
     target_link_libraries(wic_roundtrip_test PRIVATE windowscodecs.lib ole32.lib)
     target_compile_definitions(wic_roundtrip_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+else()
+    add_library(jbig2 SHARED src/jbig2_c_api.cpp)
+    target_link_libraries(jbig2 PRIVATE jbig2_core)
+    set_target_properties(jbig2 PROPERTIES CXX_VISIBILITY_PRESET hidden)
 endif()
+
+add_executable(core_test tests/core_test.cpp)
+target_link_libraries(core_test PRIVATE jbig2_core)
+
+add_executable(encoder_test tests/encoder_test.cpp)
+target_link_libraries(encoder_test PRIVATE jbig2_core)
+
+add_executable(jbig2-cli src/jbig2_cli.cpp)
+target_link_libraries(jbig2-cli PRIVATE jbig2_core)

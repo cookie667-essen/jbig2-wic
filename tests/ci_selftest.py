@@ -2,9 +2,12 @@ import ctypes, struct, subprocess, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DLL = ROOT / "build" / "Release" / "jbig2_wic.dll"
-TEST_EXE = ROOT / "build" / "Release" / "encoder_test.exe"
-CORE_EXE = ROOT / "build" / "Release" / "core_test.exe"
+import os, sys
+_IS_WIN = (sys.platform == "win32")
+_BDIR = Path(os.environ.get("JBIG2_BUILD_DIR", str(ROOT / "build" / "Release" if _IS_WIN else ROOT / "build")))
+DLL = _BDIR / ("jbig2_wic.dll" if _IS_WIN else "libjbig2.so")
+TEST_EXE = _BDIR / ("encoder_test.exe" if _IS_WIN else "encoder_test")
+CORE_EXE = _BDIR / ("core_test.exe" if _IS_WIN else "core_test")
 
 class Page(ctypes.Structure):
     _fields_ = [
@@ -13,7 +16,7 @@ class Page(ctypes.Structure):
         ("dpi_x", ctypes.c_double), ("dpi_y", ctypes.c_double),
     ]
 
-lib = ctypes.WinDLL(str(DLL))
+lib = ctypes.WinDLL(str(DLL)) if _IS_WIN else ctypes.CDLL(str(DLL))
 lib.jbig2_encode_multipage_1bpp.argtypes = [
     ctypes.POINTER(Page), ctypes.c_uint32, ctypes.c_int,
     ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)), ctypes.POINTER(ctypes.c_size_t),
@@ -189,7 +192,7 @@ def _test_halftone() -> None:
     from pathlib import Path
     from PIL import Image
 
-    lib = ctypes.WinDLL(str(Path("build/Release/jbig2_wic.dll").resolve()))
+    lib = ctypes.WinDLL(str(DLL)) if _IS_WIN else ctypes.CDLL(str(DLL))
     class _Page(ctypes.Structure):
         _fields_ = [("p", ctypes.c_void_p), ("w", ctypes.c_uint32), ("h", ctypes.c_uint32),
                     ("s", ctypes.c_uint32), ("dx", ctypes.c_double), ("dy", ctypes.c_double)]
@@ -225,7 +228,7 @@ def _test_halftone() -> None:
         fg, fh = Path(td) / "g.jb2", Path(td) / "h.jb2"
         fg.write_bytes(gb)
         fh.write_bytes(hb)
-        r = subprocess.run(["build/Release/encoder_test.exe", "--compare", str(fg), str(fh)],
+        r = subprocess.run([str(TEST_EXE), "--compare", str(fg), str(fh)],
                            capture_output=True, text=True, check=True)
         assert "0 Bit" in r.stdout, r.stdout
     print(f"[OK] Halftone (4x4): Generic={len(gb)} B | Halftone={len(hb)} B "

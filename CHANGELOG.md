@@ -4,6 +4,17 @@ All notable changes to **jbig2-wic** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-11-27
+
+### Added
+- **Linux x64 Support (`libjbig2.so`)**: Unified C++20 core & C-API (`src/jbig2_c_api.cpp`) compiling natively with GCC/Ninja alongside Windows MSVC.
+- **Zero-Dependency CLI (`jbig2-cli`)**: Cross-platform CLI for `info`, `decode` (P4 PBM / 1-bit PNG), `thumb` (antialiased 8-bit PNG), and `encode` (multi-page `.jb2` and `/JBIG2Globals` `.pdf`).
+- **Linux Desktop Integration**: Freedesktop `.thumbnailer`, Shared-MIME-Info XML (`*.jb2`/`*.jbig2` magic bytes), and `linux/install-linux.sh` (`--user` or system-wide).
+- **Dual-Platform CI**: Added `ubuntu-latest` build, selftest, and release packaging (`jbig2-tools-linux-x64.tar.gz` + `jbig2-tools-win64.zip`).
+
+### Changed
+- **Project Renamed to `jbig2-tools`**: Reflects cross-platform scope (Windows WIC codec `jbig2_wic.dll` filename preserved for backward compatibility).
+
 ## [2.5.0] - 2026-11-26
 
 ### Added
