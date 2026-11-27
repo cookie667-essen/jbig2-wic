@@ -1,0 +1,5 @@
+# Linux-Skripte, Desktop-Dateien und CI-Workflows immer mit LF
+*.sh text eol=lf
+*.thumbnailer text eol=lf
+*.xml text eol=lf
+*.yml text eol=lf
