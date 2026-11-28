@@ -14,10 +14,26 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#ifdef _WIN32
+#  include <fcntl.h>
+#  include <io.h>
+#endif
 
 namespace {
 
 bool ReadFile(const std::string& path, std::vector<uint8_t>& out) {
+    if (path == "-") {
+#ifdef _WIN32
+        _setmode(_fileno(stdin), _O_BINARY);
+#endif
+        out.clear();
+        char buf[65536];
+        while (std::cin.read(buf, sizeof(buf)) || std::cin.gcount() > 0) {
+            out.insert(out.end(), reinterpret_cast<uint8_t*>(buf),
+                       reinterpret_cast<uint8_t*>(buf) + std::cin.gcount());
+        }
+        return !out.empty();
+    }
     std::ifstream f(path, std::ios::binary | std::ios::ate);
     if (!f) return false;
     const auto sz = f.tellg();
@@ -154,11 +170,15 @@ bool ReadPbmP4(const std::string& path, jbig2::Bitmap1bpp& out, double dpi) {
     std::string magic, sw, sh;
     if (!next_tok(magic) || magic != "P4" || !next_tok(sw) || !next_tok(sh)) return false;
     if (i < buf.size() && std::isspace(buf[i])) ++i;
-    const uint32_t w = static_cast<uint32_t>(std::stoul(sw));
-    const uint32_t h = static_cast<uint32_t>(std::stoul(sh));
+    uint32_t w = 0, h = 0;
+    try {
+        w = static_cast<uint32_t>(std::stoul(sw));
+        h = static_cast<uint32_t>(std::stoul(sh));
+    } catch (...) { return false; }
+    if (w == 0 || h == 0 || w > 65536u || h > 65536u) return false;
     const uint32_t stride = (w + 7u) / 8u;
     const size_t need = static_cast<size_t>(stride) * h;
-    if (w == 0 || h == 0 || buf.size() - i < need) return false;
+    if (buf.size() - i < need) return false;
 
     out.width = w;
     out.height = h;
@@ -290,14 +310,17 @@ bool WriteThumbnailPng(const std::string& path, const jbig2::Bitmap1bpp& bmp, ui
     return WritePngRaw(path, dw, dh, 8, gray.data(), dw, dw);
 }
 
+constexpr const char* kVersion = "3.0.1";
+
 void PrintUsage() {
     std::cerr
-        << "jbig2-cli (jbig2-tools v3.0.0)\n"
+        << "jbig2-cli (jbig2-tools v" << kVersion << ")\n"
         << "Usage:\n"
-        << "  jbig2-cli info <in.jb2>\n"
-        << "  jbig2-cli decode <in.jb2> <out.pbm|out.png> [--page N]\n"
-        << "  jbig2-cli thumb <in.jb2> <out.png> <max_size>\n"
-        << "  jbig2-cli encode [--symbol] [--lossy-safe] [--halftone] [--at] [--dpi N] <in1.pbm...> -o <out.jb2|out.pdf>\n";
+        << "  jbig2-cli --version\n"
+        << "  jbig2-cli info <in.jb2|->\n"
+        << "  jbig2-cli decode <in.jb2|-> <out.pbm|out.png> [--page N]\n"
+        << "  jbig2-cli thumb <in.jb2|-> <out.png> <max_size>\n"
+        << "  jbig2-cli encode [--symbol] [--lossy-safe] [--halftone] [--at] [--dpi N] <in1.pbm|->... -o <out.jb2|out.pdf>\n";
 }
 
 } // namespace
@@ -305,6 +328,8 @@ void PrintUsage() {
 int main(int argc, char** argv) {
     if (argc < 2) { PrintUsage(); return 1; }
     const std::string cmd = argv[1];
+    if (cmd == "--version" || cmd == "-V") { std::cout << "jbig2-tools " << kVersion << "\n"; return 0; }
+    if (cmd == "--help" || cmd == "-h") { PrintUsage(); return 0; }
 
     if (cmd == "info" && argc >= 3) {
         std::vector<uint8_t> data;

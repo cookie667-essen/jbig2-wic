@@ -33,6 +33,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           Copy-Item build/Release/jbig2_wic.dll, build/Release/jbig2-cli.exe dist/
+          Copy-Item include/jbig2_c_api.h dist/
           Copy-Item scripts/install.ps1, scripts/uninstall.ps1, LICENSE, README.md dist/
           Compress-Archive -Path dist/* -DestinationPath jbig2-tools-win64.zip -Force
 
@@ -44,12 +45,15 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
+    container: debian:bookworm
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
       - name: Install Build Dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build python3-pil
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends cmake g++ ninja-build python3 python3-pil
 
       - name: Configure & Build Release
         run: |
@@ -59,20 +63,23 @@ jobs:
       - name: Run Automated Codec Self-Test
         run: JBIG2_BUILD_DIR=build python3 tests/ci_selftest.py
 
-      - name: Package Linux Release Tarball
+      - name: Package Linux Tarball & Debian .deb
         run: |
-          mkdir -p dist
-          cp build/libjbig2.so build/jbig2-cli dist/
+          VER="${GITHUB_REF_NAME#v}"
+          [[ "$VER" =~ ^[0-9]+\.[0-9]+ ]] || VER="3.0.1"
+          mkdir -p dist linux_out
+          cp build/libjbig2.so build/jbig2-cli include/jbig2_c_api.h dist/
           cp linux/jbig2.thumbnailer linux/jbig2-mime.xml linux/install-linux.sh dist/
           cp LICENSE README.md dist/
           chmod +x dist/jbig2-cli dist/install-linux.sh
-          tar -czf jbig2-tools-linux-x64.tar.gz -C dist .
+          tar -czf linux_out/jbig2-tools-linux-x64.tar.gz -C dist .
+          bash linux/build-deb.sh "$VER" build linux_out
 
-      - name: Upload Linux Artifact
+      - name: Upload Linux Artifacts
         uses: actions/upload-artifact@v6
         with:
           name: jbig2-tools-linux-x64
-          path: jbig2-tools-linux-x64.tar.gz
+          path: linux_out/*
 
   release:
     needs: [ build-windows, build-linux ]

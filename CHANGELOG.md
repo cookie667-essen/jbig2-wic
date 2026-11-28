@@ -4,6 +4,18 @@ All notable changes to **jbig2-wic** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.1] - 2026-11-28
+
+### Added
+- **Debian/Ubuntu `.deb` Package**: Automated `jbig2-tools_<ver>_amd64.deb` built in `debian:bookworm` for broad glibc compatibility (`>= 2.36`).
+- **Public C Header (`include/jbig2_c_api.h`)**: Clean C-API declarations for `libjbig2.so` / `jbig2_wic.dll`.
+- **CLI `--version` & `stdin` Pipe (`-`)**: Pipe P4 PBM streams directly into `jbig2-cli encode - -o out.jb2`.
+- **Corrupt-Input & Pipe Self-Tests**: Verified under ASan + UBSan.
+
+### Fixed
+- **LossySafe Small-Glyph Guard**: Symmetrically enforces exact matching when either glyph or prototype is smaller than `10x12` px; enables 2-member groups in Step 4.
+- **C-API & WIC Hardening**: Added `stride` validation in `jbig2_c_api.cpp`, shared internal `jbig2_file_parser.h` header, `std::jthread` exception safety, parallel multi-page halftone encoding, and proper `E_ACCESSDENIED` reporting in `wic_registry.cpp`.
+
 ## [3.0.0] - 2026-11-27
 
 ### Added

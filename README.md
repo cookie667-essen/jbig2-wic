@@ -37,7 +37,12 @@ Run PowerShell **as Administrator**:
 ```
 
 ## Installation (Linux x64)
-From a release tarball or after building:
+**Debian / Ubuntu / Mint (`.deb`):**
+```bash
+sudo apt install ./jbig2-tools_*_amd64.deb
+```
+
+**Generic Linux tarball or from source:**
 ```bash
 sudo ./install-linux.sh          # system-wide (/usr/local)
 # or user-local (~/.local):

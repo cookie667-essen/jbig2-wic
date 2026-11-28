@@ -2,20 +2,7 @@
 #include "core/fxcodec/jbig2/jbig2_decoder.h"
 #include "core/fxcodec/jbig2/jbig2_document_context.h"
 
-namespace jbig2::detail {
-struct PageMeta { uint32_t width, height; double dpi_x, dpi_y; };
-struct Slice { size_t offset, length; };
-struct ParsedFile {
-    bool is_sequential;
-    bool zero_copy_single_page;
-    Slice single_page_slice;
-    uint32_t page_count;
-    std::vector<uint8_t> global_stream;
-    std::vector<std::vector<uint8_t>> page_streams;
-    std::vector<PageMeta> pages;
-};
-std::optional<ParsedFile> ParseStandaloneFile(std::span<const uint8_t> data);
-} // namespace jbig2::detail
+#include "jbig2_file_parser.h"
 
 namespace jbig2 {
 

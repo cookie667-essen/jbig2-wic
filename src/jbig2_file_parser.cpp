@@ -1,9 +1,6 @@
+#include "jbig2_file_parser.h"
 #include <algorithm>
 #include <array>
-#include <cstdint>
-#include <optional>
-#include <span>
-#include <vector>
 
 namespace jbig2::detail {
 
@@ -15,25 +12,6 @@ inline constexpr std::array<uint8_t, 8> kSig = {
 inline constexpr uint32_t kMaxPages  = 10000;
 inline constexpr uint32_t kMaxDim    = 65536;
 inline constexpr uint64_t kMaxPixels = 256ull * 1024 * 1024; // 256 MP
-
-struct PageMeta {
-    uint32_t width = 0;
-    uint32_t height = 0;
-    double dpi_x = 96.0;
-    double dpi_y = 96.0;
-};
-
-struct Slice { size_t offset = 0; size_t length = 0; };
-
-struct ParsedFile {
-    bool is_sequential = true;
-    bool zero_copy_single_page = false;
-    Slice single_page_slice{};
-    uint32_t page_count = 0;
-    std::vector<uint8_t> global_stream;
-    std::vector<std::vector<uint8_t>> page_streams;
-    std::vector<PageMeta> pages;
-};
 
 static uint32_t ReadBE32(std::span<const uint8_t> s, size_t off) {
     return (uint32_t(s[off]) << 24) | (uint32_t(s[off + 1]) << 16) |
@@ -175,7 +153,7 @@ std::optional<ParsedFile> ParseStandaloneFile(std::span<const uint8_t> data) {
         }
     }
 
-    if (out.page_count == 0) out.page_count = max_page;
+    out.page_count = max_page;
     return out;
 }
 

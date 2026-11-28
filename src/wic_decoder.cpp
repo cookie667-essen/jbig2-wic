@@ -46,8 +46,8 @@ public:
         if (!pbBuffer) return E_INVALIDARG;
         WICRect rc = prc ? *prc : WICRect{ 0, 0, static_cast<INT>(bmp_.width), static_cast<INT>(bmp_.height) };
         if (rc.X < 0 || rc.Y < 0 || rc.Width < 0 || rc.Height < 0 ||
-            rc.X + rc.Width > static_cast<INT>(bmp_.width) ||
-            rc.Y + rc.Height > static_cast<INT>(bmp_.height)) return E_INVALIDARG;
+            static_cast<int64_t>(rc.X) + rc.Width > static_cast<int64_t>(bmp_.width) ||
+            static_cast<int64_t>(rc.Y) + rc.Height > static_cast<int64_t>(bmp_.height)) return E_INVALIDARG;
         if (rc.Width == 0 || rc.Height == 0) return S_OK;
 
         const UINT row_bytes = (static_cast<UINT>(rc.Width) + 7) / 8;

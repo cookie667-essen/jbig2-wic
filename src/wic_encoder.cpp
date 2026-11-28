@@ -78,7 +78,7 @@ public:
         if (committed_) return WINCODEC_ERR_WRONGSTATE;
         if (!pbPixels) return E_INVALIDARG;
         if (lineCount == 0) return S_OK;
-        if (cur_line_ + lineCount > bmp_.height) return E_INVALIDARG;
+        if (lineCount > bmp_.height - cur_line_) return E_INVALIDARG;
 
         const uint64_t min_buf = static_cast<uint64_t>(cbStride) * (lineCount - 1) + bmp_.stride;
         if (cbStride < bmp_.stride || cbBufferSize < min_buf) return WINCODEC_ERR_INSUFFICIENTBUFFER;
@@ -102,12 +102,15 @@ public:
 
         WICRect rc = prc ? *prc : WICRect{ 0, 0, static_cast<INT>(sw), static_cast<INT>(sh) };
         if (rc.X < 0 || rc.Y < 0 || rc.Width <= 0 || rc.Height <= 0 ||
-            rc.X + rc.Width > static_cast<INT>(sw) || rc.Y + rc.Height > static_cast<INT>(sh))
+            static_cast<int64_t>(rc.X) + rc.Width > static_cast<int64_t>(sw) ||
+            static_cast<int64_t>(rc.Y) + rc.Height > static_cast<int64_t>(sh))
             return E_INVALIDARG;
 
         if (!size_set_) {
             hr = SetSize(static_cast<UINT>(rc.Width), static_cast<UINT>(rc.Height));
             if (FAILED(hr)) return hr;
+        } else if (static_cast<UINT>(rc.Width) != bmp_.width || static_cast<UINT>(rc.Height) != bmp_.height) {
+            return E_INVALIDARG;
         }
         double dx = 96.0, dy = 96.0;
         if (!resolution_set_ && SUCCEEDED(pIBitmapSource->GetResolution(&dx, &dy))) {

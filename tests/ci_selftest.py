@@ -235,3 +235,31 @@ def _test_halftone() -> None:
           f"({(len(hb)-len(gb))/len(gb)*100:+.1f}%) | 0 Bit")
 
 _test_halftone()
+
+
+# 7. Corrupt-Input & Stride-Safety Check (darf nie crashen)
+import tempfile
+bad_inputs = [
+    b"",
+    b"\x97JB2\r\n\x1a\n",
+    b"\x97JB2\r\n\x1a\n\x01\x00\x00\x00\x01",
+    b"\x97JB2\r\n\x1a\n\xff\xff\xff\xff\xff\xff\xff\xff\xff",
+    b"\x97JB2\r\n\x1a\n\x01\x00\x00\x00\x01\x00\x00\x00\x00\x30\x00\x01\x00\x00\x00\x13" + b"\xff" * 19,
+]
+cli_bin = (DLL.parent / ("jbig2-cli.exe" if _IS_WIN else "jbig2-cli"))
+if cli_bin.exists():
+    with tempfile.TemporaryDirectory() as td:
+        for idx, blob in enumerate(bad_inputs):
+            fp = Path(td) / f"bad_{idx}.jb2"
+            fp.write_bytes(blob)
+            r = subprocess.run([str(cli_bin), "info", str(fp)], capture_output=True)
+            assert r.returncode != 0, f"Corrupt input {idx} wurde faelschlich akzeptiert"
+    print(f"[OK] Corrupt-Input-Test ({len(bad_inputs)} kaputte Dateien sauber abgewiesen)")
+    with tempfile.TemporaryDirectory() as td:
+        out_jb2 = Path(td) / "pipe.jb2"
+        pbm = b"P4\n16 16\n" + bytes([0xAA, 0x55] * 16)
+        r = subprocess.run([str(cli_bin), "encode", "-", "-o", str(out_jb2)], input=pbm, capture_output=True)
+        assert r.returncode == 0 and out_jb2.stat().st_size > 13, f"stdin-Pipe fehlgeschlagen: {r.stderr}"
+        r2 = subprocess.run([str(cli_bin), "--version"], capture_output=True, text=True)
+        assert r2.returncode == 0 and "jbig2-tools" in r2.stdout
+    print(f"[OK] CLI stdin-Pipe & --version ({r2.stdout.strip()})")

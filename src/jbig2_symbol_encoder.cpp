@@ -35,11 +35,10 @@ void RunParallel(size_t count, Fn&& fn) {
         }
     };
 
-    std::vector<std::thread> threads;
+    std::vector<std::jthread> threads;
     threads.reserve(num_threads - 1);
     for (size_t t = 1; t < num_threads; ++t) threads.emplace_back(worker);
     worker();
-    for (auto& th : threads) th.join();
 }
 
 struct BBox { uint32_t x0 = 0xFFFFFFFFu, y0 = 0xFFFFFFFFu, x1 = 0, y1 = 0, count = 0; };
@@ -434,11 +433,10 @@ DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages
                 ExtractGlyphsForPage(pages[p], static_cast<uint32_t>(p), runs, page_glyphs[p]);
             }
         };
-        std::vector<std::thread> threads;
+        std::vector<std::jthread> threads;
         threads.reserve(num_threads > 1 ? num_threads - 1 : 0);
         for (size_t t = 1; t < num_threads; ++t) threads.emplace_back(ccl_worker);
         ccl_worker();
-        for (auto& th : threads) th.join();
     }
 
     // Deterministisches Zusammenführen in strikter Seitenreihenfolge
@@ -493,7 +491,8 @@ DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages
                 for (uint32_t gid : buckets[bidx(bw, bh)]) {
                     const uint32_t pidx = groups[gid].proto_idx;
                     const Glyph& p = glyphs[pidx];
-                    if (small_exact_only && (p.w != g.w || p.h != g.h)) continue;
+                    const bool pair_exact_only = small_exact_only || (lossy_safe && (p.w < 10u || p.h < 12u));
+                    if (pair_exact_only && (p.w != g.w || p.h != g.h)) continue;
                     if (lossy_safe && glyph_holes[i] != glyph_holes[pidx]) continue;
                     const uint32_t cnt_diff = (g.black_cnt > p.black_cnt) ? (g.black_cnt - p.black_cnt) : (p.black_cnt - g.black_cnt);
                     if (cnt_diff >= best_dist) continue;
@@ -516,11 +515,11 @@ DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages
                             }
                         }
                     } else {
-                        auto fitsPage = [&](int dx, int dy) { const int32_t nx = static_cast<int32_t>(g.x) + dx, ny = static_cast<int32_t>(g.y) + dy; return nx >= 0 && ny >= 0 && nx + static_cast<int32_t>(p.w) <= static_cast<int32_t>(pages[g.page_idx].width) && ny + static_cast<int32_t>(p.h) <= static_cast<int32_t>(pages[g.page_idx].height); }; if (small_exact_only) { if (std::memcmp(g.rows.data(), p.rows.data(), g.h * sizeof(uint64_t)) == 0) { best_dist = 0; best_gid = gid; best_rdx = 0; best_rdy = 0; break; } continue; } uint32_t d0 = 0; if (fitsPage(base_dx, base_dy) && IsLossySafeMatch(g, p, base_dx, base_dy, best_dist - 1u, d0)) {
+                        auto fitsPage = [&](int dx, int dy) { const int32_t nx = static_cast<int32_t>(g.x) + dx, ny = static_cast<int32_t>(g.y) + dy; return nx >= 0 && ny >= 0 && nx + static_cast<int32_t>(p.w) <= static_cast<int32_t>(pages[g.page_idx].width) && ny + static_cast<int32_t>(p.h) <= static_cast<int32_t>(pages[g.page_idx].height); }; if (pair_exact_only) { if (std::memcmp(g.rows.data(), p.rows.data(), g.h * sizeof(uint64_t)) == 0) { best_dist = 0; best_gid = gid; best_rdx = 0; best_rdy = 0; break; } continue; } uint32_t d0 = 0; if (fitsPage(base_dx, base_dy) && IsLossySafeMatch(g, p, base_dx, base_dy, best_dist - 1u, d0)) {
                             best_dist = d0; best_gid = gid; best_rdx = 0; best_rdy = 0;
                             if (d0 == 0) break;
                         }
-                        if (!small_exact_only && best_dist > 1u) {
+                        if (!pair_exact_only && best_dist > 1u) {
                             const uint32_t coarse = HammingShift(g, p, base_dx, base_dy, max_diff * 2u);
                             if (coarse <= max_diff * 2u) {
                                 for (auto [sdx, sdy] : kExtraShifts) {
@@ -593,7 +592,7 @@ DocumentSymbolPlan BuildDocumentSymbolPlan(std::span<const Bitmap1bppView> pages
                 if (!m.refined) act_exact++;
             }
         }
-        if (act_cnt >= 3 || (act_cnt == 2 && act_exact == 2)) {
+        if (act_cnt >= 3 || (act_cnt == 2 && (lossy_safe || act_exact == 2))) {
             active_groups.push_back(gi);
             total_instances += act_cnt;
         }

@@ -50,22 +50,23 @@ HRESULT RegisterJbig2WicCodec(HMODULE hModule) {
     const std::wstring catDec   = GuidStr(CATID_WICBitmapDecoders);
     const std::wstring catEnc   = GuidStr(CATID_WICBitmapEncoders);
 
+    bool ok = true;
     auto regCommon = [&](const std::wstring& clsid, const wchar_t* desc, const wchar_t* friendly) {
         const std::wstring base = L"CLSID\\" + clsid;
-        SetStr(HKEY_CLASSES_ROOT, base, nullptr, desc);
-        SetStr(HKEY_CLASSES_ROOT, base, L"FriendlyName", friendly);
-        SetStr(HKEY_CLASSES_ROOT, base, L"Author", L"JBIG2-WIC");
-        SetStr(HKEY_CLASSES_ROOT, base, L"Vendor", kVendorGuid);
-        SetStr(HKEY_CLASSES_ROOT, base, L"Version", L"2.0.0.0");
-        SetStr(HKEY_CLASSES_ROOT, base, L"SpecVersion", L"1.0.0.0");
-        SetStr(HKEY_CLASSES_ROOT, base, L"ContainerFormat", fmtGuid);
-        SetStr(HKEY_CLASSES_ROOT, base, L"FileExtensions", L".jb2,.jbig2");
-        SetStr(HKEY_CLASSES_ROOT, base, L"MimeTypes", L"image/jbig2");
-        SetDword(HKEY_CLASSES_ROOT, base, L"SupportLossless", 1);
-        SetDword(HKEY_CLASSES_ROOT, base, L"SupportMultiframe", 1);
-        SetStr(HKEY_CLASSES_ROOT, base + L"\\InprocServer32", nullptr, dllPath);
-        SetStr(HKEY_CLASSES_ROOT, base + L"\\InprocServer32", L"ThreadingModel", L"Both");
-        SetStr(HKEY_CLASSES_ROOT, base + L"\\Formats\\" + pix1bpp, nullptr, L"");
+        ok &= SetStr(HKEY_CLASSES_ROOT, base, nullptr, desc);
+        ok &= SetStr(HKEY_CLASSES_ROOT, base, L"FriendlyName", friendly);
+        ok &= SetStr(HKEY_CLASSES_ROOT, base, L"Author", L"jbig2-tools");
+        ok &= SetStr(HKEY_CLASSES_ROOT, base, L"Vendor", kVendorGuid);
+        ok &= SetStr(HKEY_CLASSES_ROOT, base, L"Version", L"3.0.1.0");
+        ok &= SetStr(HKEY_CLASSES_ROOT, base, L"SpecVersion", L"1.0.0.0");
+        ok &= SetStr(HKEY_CLASSES_ROOT, base, L"ContainerFormat", fmtGuid);
+        ok &= SetStr(HKEY_CLASSES_ROOT, base, L"FileExtensions", L".jb2,.jbig2");
+        ok &= SetStr(HKEY_CLASSES_ROOT, base, L"MimeTypes", L"image/jbig2");
+        ok &= SetDword(HKEY_CLASSES_ROOT, base, L"SupportLossless", 1);
+        ok &= SetDword(HKEY_CLASSES_ROOT, base, L"SupportMultiframe", 1);
+        ok &= SetStr(HKEY_CLASSES_ROOT, base + L"\\InprocServer32", nullptr, dllPath);
+        ok &= SetStr(HKEY_CLASSES_ROOT, base + L"\\InprocServer32", L"ThreadingModel", L"Both");
+        ok &= SetStr(HKEY_CLASSES_ROOT, base + L"\\Formats\\" + pix1bpp, nullptr, L"");
     };
 
     // 1. Decoder + Magic-Bytes-Pattern
@@ -93,6 +94,7 @@ HRESULT RegisterJbig2WicCodec(HMODULE hModule) {
         SetStr(HKEY_CLASSES_ROOT, std::wstring(L"SystemFileAssociations\\") + ext + L"\\ShellEx\\" + kThumbEx, nullptr, kPhotoThumb);
     }
 
+    if (!ok) return E_ACCESSDENIED;
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     return S_OK;
 }

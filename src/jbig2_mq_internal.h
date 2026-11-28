@@ -143,9 +143,7 @@ struct ArithIaidCtx {
     uint32_t codelen = 1;
     std::vector<uint8_t> ctx;
     explicit ArithIaidCtx(uint32_t num_syms) {
-        codelen = 0;
-        while ((1u << codelen) < num_syms) ++codelen;
-        if (codelen == 0) codelen = 1;
+        codelen = (num_syms <= 1u) ? 1u : static_cast<uint32_t>(std::bit_width(num_syms - 1u));
         ctx.assign(size_t{1} << codelen, 0);
     }
     void Encode(MqEncoder& mq, uint32_t id) {

@@ -38,10 +38,12 @@ class Jbig2BitmapDecoder final : public RuntimeClass<RuntimeClassFlags<ClassicCo
         STATSTG st{}; if (SUCCEEDED(stream->Stat(&st, STATFLAG_NONAME)) && st.cbSize.QuadPart > 0 && st.cbSize.QuadPart <= kMaxFileBytes) out.reserve(static_cast<size_t>(st.cbSize.QuadPart));
         uint8_t buf[65536];
         ULONG read = 0;
-        while (SUCCEEDED(stream->Read(buf, sizeof(buf), &read)) && read > 0) {
+        HRESULT hr = S_OK;
+        while (SUCCEEDED(hr = stream->Read(buf, sizeof(buf), &read)) && read > 0) {
             if (out.size() + read > kMaxFileBytes) return WINCODEC_ERR_STREAMREAD;
             out.insert(out.end(), buf, buf + read);
         }
+        if (FAILED(hr)) return hr;
         return out.empty() ? WINCODEC_ERR_BADHEADER : S_OK;
     }
 

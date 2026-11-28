@@ -175,7 +175,7 @@ void RunParallelWithCtx(size_t count, Fn&& fn) {
         return;
     }
     std::atomic<size_t> next{0};
-    std::vector<std::thread> workers;
+    std::vector<std::jthread> workers;
     workers.reserve(n_threads - 1);
     auto worker = [&]() {
         std::vector<uint8_t> ctx(65536, 0);
@@ -187,7 +187,6 @@ void RunParallelWithCtx(size_t count, Fn&& fn) {
     };
     for (size_t t = 1; t < n_threads; ++t) workers.emplace_back(worker);
     worker();
-    for (auto& w : workers) w.join();
 }
 void WritePageInfo(std::vector<uint8_t>& file, uint32_t& seg, uint32_t page, const Bitmap1bppView& bmp) {
     WriteSegHdr(file, seg++, 48, page, 19);
@@ -223,10 +222,10 @@ PreparedDocument PrepareDocument(std::span<const Bitmap1bppView> pages, Lossless
     if (!opts.symbol_coding && !opts.lossy_symbol) {
         RunParallelWithCtx(pages.size(), [&](size_t i, uint8_t* ctx) { out.gen_payloads[i] = EncodeGenericRegionPayload(pages[i], opts.adaptive_templates, ctx); });
         if (opts.halftone_coding) {
-            for (size_t i = 0; i < pages.size(); ++i) {
+            RunParallelWithCtx(pages.size(), [&](size_t i, uint8_t*) {
                 out.ht_plans[i] = detail::BuildPageHalftonePlan(pages[i]);
                 if (out.ht_plans[i].valid && out.ht_plans[i].dict_payload.size() + out.ht_plans[i].region_payload.size() + 24u < out.gen_payloads[i].size()) out.use_ht[i] = 1;
-            }
+            });
         }
         out.ok = true; return out;
     }
@@ -274,11 +273,16 @@ PreparedDocument PrepareDocument(std::span<const Bitmap1bppView> pages, Lossless
     }
     out.emit_global_dict = out.plan.valid && total_saved > static_cast<int64_t>(out.plan.dict_payload.size() + 12u);
     if (opts.halftone_coding) {
+        std::vector<size_t> ht_pages;
+        ht_pages.reserve(pages.size());
         for (size_t i = 0; i < pages.size(); ++i) {
-            if (out.emit_global_dict && out.use_sym[i]) continue;
+            if (!(out.emit_global_dict && out.use_sym[i])) ht_pages.push_back(i);
+        }
+        RunParallelWithCtx(ht_pages.size(), [&](size_t idx, uint8_t*) {
+            const size_t i = ht_pages[idx];
             out.ht_plans[i] = detail::BuildPageHalftonePlan(pages[i]);
             if (out.ht_plans[i].valid && out.ht_plans[i].dict_payload.size() + out.ht_plans[i].region_payload.size() + 24u < out.gen_payloads[i].size()) out.use_ht[i] = 1;
-        }
+        });
     }
     out.ok = true; return out;
 }
