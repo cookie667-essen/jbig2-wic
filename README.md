@@ -17,14 +17,14 @@ A fast, zero-dependency, cross-platform **JBIG2 (ITU-T T.88)** toolkit for **Win
 - **Linux Shared Library & Thumbnails:** Native `libjbig2.so` (`ctypes`/C API) plus Freedesktop `.thumbnailer` & MIME integration for Nautilus, Thunar, Nemo, and Caja.
 - **Single-File Windows DLL:** Statically linked CRT (`/MT`) — no VC++ Redistributable required.
 
-## Benchmarks (v2.5.0)
+## Benchmarks
 
-| Dataset (Multi-Page) | Orig PNG | `jbig2.exe` Gen (Net) | `jbig2-wic` Gen | `jbig2-wic` Sym | vs. PNG | Speedup vs. `jbig2.exe` |
+| Dataset (Multi-Page) | Orig PNG | `jbig2.exe` Gen (Net) | `jbig2-tools` Gen | `jbig2-tools` Sym | vs. PNG | Speedup vs. `jbig2.exe` |
 |---|---:|---:|---:|---:|---:|---:|
 | **7 Real-World Scans** | 1,390.7 KB | 669.5 KB (463.5 ms) | 669.5 KB (37.8 ms) | **646.6 KB** (97.6 ms) | **-53.5%** | **12.3x** Gen / **4.7x** Sym |
 | **107-File Corpus** | 4,495.4 KB | 2,475.9 KB\* (2,013.1 ms) | 2,473.8 KB (126.0 ms) | **2,262.4 KB** (305.0 ms) | **-49.7%** | **16.0x** Gen / **6.6x** Sym |
 
-\* `jbig2.exe` (`jbig2enc`) fed uncompressed P4 PBM from OS cache (6.8 ms/call process spawn subtracted). It passes 106/107 files (crashes with `rc=3` on `1x1` black) and its lossless symbol mode (`-s -r`) is broken/disabled upstream. `jbig2-wic` passes **107/107** with **0-bit diff**. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the full breakdown.
+\* `jbig2.exe` (`jbig2enc`) fed uncompressed P4 PBM from OS cache (6.8 ms/call process spawn subtracted). It passes 106/107 files (crashes with `rc=3` on `1x1` black) and its lossless symbol mode (`-s -r`) is broken/disabled upstream. `jbig2-tools` passes **107/107** with **0-bit diff**. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the full breakdown.
 
 **LossySafe (`flags=6`):** Cuts the 7-page scan set further to **606.0 KB** (-56.4% vs. PNG / -9.5% vs. Generic in 137.2 ms) and achieves **-25% to -51% vs. Generic** on external 200-300 DPI Leptonica/Tesseract scans with **0** 2x2 structural error blocks.
 
@@ -66,7 +66,7 @@ JBIG2_BUILD_DIR=build python3 tests/ci_selftest.py
 ## Documentation
 
 - [Architecture & Encoding Pipeline](docs/ARCHITECTURE.md) — MQ coder, Run-Length 4-CCL, GRRD T1 refinement, std::jthread overlap
-- [Benchmarks](docs/BENCHMARKS.md) — Progression (v2.1 to v2.3) and 107-file multi-category corpus (-49.7% vs. PNG, 0-bit diff)
+- [Benchmarks](docs/BENCHMARKS.md) — Progression (v2.1 to v3.0+) and 107-file multi-category corpus (-49.7% vs. PNG, 0-bit diff)
 - [Changelog](CHANGELOG.md) — Release history
 
 ## License
