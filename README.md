@@ -1,7 +1,7 @@
 # jbig2-tools
 
 > [!NOTE]
-> [![Latest Release](https://img.shields.io/github/v/release/cookie667-essen/jbig2-tools?label=Latest%20Release)](https://github.com/cookie667-essen/jbig2-tools/releases/latest) — Zero-copy PDF `/JBIG2Globals` stream export, lossless 4x4 Halftone Region coding (`flags=8`), optional `LossySafe` symbol coding (4-stage Xerox guard) & 0-bit lossless GRRD T1 symbol coding.
+> [![Latest Release](https://img.shields.io/github/v/release/cookie667-gh/jbig2-tools?label=Latest%20Release)](https://github.com/cookie667-gh/jbig2-tools/releases/latest) — Zero-copy PDF `/JBIG2Globals` stream export, lossless 4x4 Halftone Region coding (`flags=8`), optional `LossySafe` symbol coding (4-stage Xerox guard) & 0-bit lossless GRRD T1 symbol coding.
 
 
 A fast, zero-dependency, cross-platform **JBIG2 (ITU-T T.88)** toolkit for **Windows x64** (`jbig2_wic.dll` WIC codec) and **Linux x64** (`libjbig2.so`, `jbig2-cli`, Freedesktop thumbnailer).

@@ -33,7 +33,7 @@ Priority: optional
 Architecture: ${ARCH}
 Depends: libc6 (>= 2.36), libstdc++6 (>= 12)
 Maintainer: Marius Koch <m.koch.essen@gmail.com>
-Homepage: https://github.com/cookie667-essen/jbig2-tools
+Homepage: https://github.com/cookie667-gh/jbig2-tools
 Description: Fast zero-dependency JBIG2 (ITU-T T.88) toolkit
  Includes jbig2-cli (inspect, decode, thumbnail, multi-page JB2/PDF encode),
  libjbig2.so shared C-API library, C header, and Freedesktop thumbnailer.
